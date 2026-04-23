@@ -43,6 +43,6 @@ toml = "0.8"
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 crossterm = "0.27"
-ratatui = "0.26"
+ratatui = "0.29"
 axum = "0.7"
 tower = "0.4"
