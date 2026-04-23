@@ -119,21 +119,19 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
 
     // -- Wallet balance --
     let mut equity = cfg.risk.starting_equity_quote;
-    if !dry_run {
-        if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
+    if !dry_run
+        && let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
             for a in &accounts {
                 for c in &a.coin {
-                    if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty() {
-                        if let Ok(bal) = c.wallet_balance.parse::<f64>() {
+                    if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty()
+                        && let Ok(bal) = c.wallet_balance.parse::<f64>() {
                             equity = bal;
                             engine.lock().await.set_equity(bal);
                             info!(equity = bal, "wallet balance loaded");
                         }
-                    }
                 }
             }
         }
-    }
 
     // -- Active grids --
     let mut active_grids: HashMap<String, ActiveGrid> = HashMap::new();
@@ -171,7 +169,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
         for result in to_deploy {
             match deploy_grid(
                 &client,
-                &result,
+                result,
                 equity,
                 &ap_cfg,
                 &cfg,
@@ -286,12 +284,11 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
                 for a in &accounts {
                     for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty() {
-                            if let Ok(bal) = c.wallet_balance.parse::<f64>() {
+                        if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty()
+                            && let Ok(bal) = c.wallet_balance.parse::<f64>() {
                                 equity = bal;
                                 engine.lock().await.set_equity(bal);
                             }
-                        }
                     }
                 }
             }
@@ -378,6 +375,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
 }
 
 /// Deploy a new grid on a scanned symbol.
+#[allow(clippy::too_many_arguments)]
 async fn deploy_grid(
     client: &bybit::rest::Client,
     scan: &ScanResult,
@@ -743,6 +741,7 @@ async fn reconcile_grid(
 }
 
 /// Evaluate scan results and switch grids if better opportunities exist.
+#[allow(clippy::too_many_arguments)]
 async fn evaluate_and_switch(
     client: &bybit::rest::Client,
     active_grids: &mut HashMap<String, ActiveGrid>,
@@ -783,8 +782,8 @@ async fn evaluate_and_switch(
 
         // Check if a MUCH better opportunity exists
         let current_score = ag.score;
-        if let Some(best) = suitable.first() {
-            if best.symbol != *symbol
+        if let Some(best) = suitable.first()
+            && best.symbol != *symbol
                 && best.score > current_score + ap_cfg.switch_threshold
                 && active_grids.len() >= ap_cfg.max_grids
             {
@@ -794,8 +793,8 @@ async fn evaluate_and_switch(
                         .partial_cmp(&b.1.score)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
-                if let Some((worst_sym, _)) = worst {
-                    if worst_sym == symbol {
+                if let Some((worst_sym, _)) = worst
+                    && worst_sym == symbol {
                         info!(
                             symbol = %symbol,
                             old_score = current_score,
@@ -805,20 +804,17 @@ async fn evaluate_and_switch(
                         );
                         to_remove.push(symbol.clone());
                     }
-                }
             }
-        }
     }
 
     // Wind down marked grids
     for symbol in &to_remove {
         if let Some(mut ag) = active_grids.remove(symbol) {
             info!(symbol = %symbol, pnl = ag.total_pnl, "Winding down grid");
-            if !dry_run {
-                if let Err(e) = client.cancel_all_spot(symbol).await {
+            if !dry_run
+                && let Err(e) = client.cancel_all_spot(symbol).await {
                     warn!(symbol = %symbol, err = %e, "cancel_all failed during wind-down");
                 }
-            }
             for (_, order) in ag.grid.orders.drain() {
                 let _ = db.lock().await.mark_cancelled(&order.order_id);
             }

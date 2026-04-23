@@ -193,8 +193,10 @@ mod tests {
 
     #[test]
     fn alerter_enabled_with_webhook() {
-        let mut cfg = AlertConfig::default();
-        cfg.webhook_url = Some("https://example.com/hook".to_string());
+        let cfg = AlertConfig {
+            webhook_url: Some("https://example.com/hook".to_string()),
+            ..AlertConfig::default()
+        };
         let alerter = Alerter::new(cfg, "test".to_string());
         assert!(alerter.is_enabled());
     }
@@ -220,9 +222,11 @@ mod tests {
 
     #[tokio::test]
     async fn send_respects_category_filter() {
-        let mut cfg = AlertConfig::default();
-        cfg.on_fill = false;
-        cfg.webhook_url = Some("https://example.com/hook".to_string());
+        let cfg = AlertConfig {
+            on_fill: false,
+            webhook_url: Some("https://example.com/hook".to_string()),
+            ..AlertConfig::default()
+        };
         let alerter = Alerter::new(cfg, "test".to_string());
         // fill category is disabled — should skip without attempting HTTP
         alerter

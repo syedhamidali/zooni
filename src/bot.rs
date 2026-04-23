@@ -227,13 +227,12 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                 // Update equity from actual USDT balance
                 for a in &accounts {
                     for c in &a.coin {
-                        if c.coin == "USDT" || c.coin == "USD" {
-                            if let Ok(bal) = c.wallet_balance.parse::<f64>() {
+                        if (c.coin == "USDT" || c.coin == "USD")
+                            && let Ok(bal) = c.wallet_balance.parse::<f64>() {
                                 let mut guard = engine.lock().await;
                                 guard.set_equity(bal);
                                 info!(equity = bal, "equity updated from wallet");
                             }
-                        }
                     }
                 }
             }
@@ -589,14 +588,13 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
             if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
                 for a in &accounts {
                     for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty() {
-                            if let Ok(bal) = c.wallet_balance.parse::<f64>() {
+                        if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty()
+                            && let Ok(bal) = c.wallet_balance.parse::<f64>() {
                                 let mut guard = engine.lock().await;
                                 guard.set_equity(bal);
                                 metrics.set_equity(bal);
                                 metrics.series.lock().await.push_equity(bal);
                             }
-                        }
                     }
                 }
             }
@@ -702,19 +700,17 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         }
 
         // Fetch current price for TUI + dashboard + rebalancing
-        if !dry_run {
-            if let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await {
-                if let Ok(price) = ticker.last_price.parse::<f64>() {
+        if !dry_run
+            && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
+                && let Ok(price) = ticker.last_price.parse::<f64>() {
                     tui_state.lock().await.current_price = price;
                     metrics.series.lock().await.push_price(price);
                 }
-            }
-        }
 
         // Dynamic grid rebalancing
-        if cfg.grid.auto_rebalance && !dry_run {
-            if let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await {
-                if let Ok(price) = ticker.last_price.parse::<f64>() {
+        if cfg.grid.auto_rebalance && !dry_run
+            && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
+                && let Ok(price) = ticker.last_price.parse::<f64>() {
                     let lower = *grid.levels.first().unwrap_or(&0.0);
                     let upper = *grid.levels.last().unwrap_or(&0.0);
                     let range = upper - lower;
@@ -777,8 +773,6 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                         }
                     }
                 }
-            }
-        }
     }
 
     // -- 16. Graceful shutdown -------------------------------------------------
@@ -848,6 +842,7 @@ async fn check_clock_sync(client: &bybit::rest::Client) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn place_with_risk(
     client: &bybit::rest::Client,
     grid: &mut Grid,
@@ -1011,6 +1006,7 @@ async fn place_with_risk(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reconcile_once(
     client: &bybit::rest::Client,
     grid: &mut Grid,
@@ -1040,11 +1036,10 @@ async fn reconcile_once(
     let mut partial_fills: std::collections::HashMap<String, f64> =
         std::collections::HashMap::new();
     for o in &open {
-        if let Ok(cum_qty) = o.cum_exec_qty.parse::<f64>() {
-            if cum_qty > 0.0 {
+        if let Ok(cum_qty) = o.cum_exec_qty.parse::<f64>()
+            && cum_qty > 0.0 {
                 partial_fills.insert(o.order_id.clone(), cum_qty);
             }
-        }
     }
 
     // Orders we tracked but that are no longer on the exchange — treat as filled.
