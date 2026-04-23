@@ -298,7 +298,7 @@ mod tests {
         let klines = make_ranging_klines(100);
         let analysis = analyze(&klines).unwrap();
         if let Some(levels) = analysis.suggested_levels {
-            assert!(levels >= 5 && levels <= 50, "levels out of range: {levels}");
+            assert!((5..=50).contains(&levels), "levels out of range: {levels}");
         }
     }
 }

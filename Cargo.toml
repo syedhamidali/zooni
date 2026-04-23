@@ -46,3 +46,10 @@ crossterm = "0.29"
 ratatui = "0.29"
 axum = "0.8"
 tower = "0.5"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "core"
+harness = false
