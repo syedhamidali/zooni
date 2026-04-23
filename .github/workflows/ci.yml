@@ -55,9 +55,9 @@ jobs:
         with:
           name: zooni-linux-x86_64
           path: |
-            target/release/trading-bot
-            target/release/backtest
-            target/release/scan
+            target/release/zooni
+            target/release/zooni-backtest
+            target/release/zooni-scan
 
   release:
     name: Auto-Release
@@ -73,7 +73,6 @@ jobs:
         id: version
         run: |
           VERSION=$(date +"%Y.%-m.%-d")
-          # Append run number to handle multiple releases per day
           TAG="v${VERSION}.${GITHUB_RUN_NUMBER}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -94,7 +93,7 @@ jobs:
             Version: ${{ steps.version.outputs.version }}
             Commit: ${{ github.sha }}
           files: |
-            artifacts/trading-bot
-            artifacts/backtest
-            artifacts/scan
+            artifacts/zooni
+            artifacts/zooni-backtest
+            artifacts/zooni-scan
           generate_release_notes: true

@@ -26,6 +26,19 @@ use crate::sizing;
 use crate::types::Side;
 use crate::venues::bybit;
 
+/// Shared context for autopilot helper functions.
+struct ApCtx<'a> {
+    client: &'a bybit::rest::Client,
+    engine: &'a Arc<Mutex<RiskEngine>>,
+    db: &'a Arc<Mutex<Db>>,
+    alerter: &'a Arc<Alerter>,
+    retry_policy: &'a RetryPolicy,
+    breaker: &'a Arc<CircuitBreaker>,
+    dry_run: bool,
+    ap_cfg: &'a AutoPilotConfig,
+    bot_cfg: &'a BotConfig,
+}
+
 #[allow(dead_code)]
 /// State for one active grid running on a symbol.
 struct ActiveGrid {
@@ -143,6 +156,19 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
     scan_tick.tick().await;
     trade_tick.tick().await;
 
+    // -- Shared context --
+    let ctx = ApCtx {
+        client: &client,
+        engine: &engine,
+        db: &db,
+        alerter: &alerter,
+        retry_policy: &retry_policy,
+        breaker: &breaker,
+        dry_run,
+        ap_cfg: &ap_cfg,
+        bot_cfg: &cfg,
+    };
+
     // -- Initial scan --
     info!("Running initial market scan...");
     let initial_results = if dry_run {
@@ -168,21 +194,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
         }
 
         for result in to_deploy {
-            match deploy_grid(
-                &client,
-                result,
-                equity,
-                &ap_cfg,
-                &cfg,
-                &engine,
-                &db,
-                &alerter,
-                &retry_policy,
-                &breaker,
-                dry_run,
-            )
-            .await
-            {
+            match deploy_grid(&ctx, result, equity).await {
                 Ok(ag) => {
                     info!(symbol = %ag.symbol, score = ag.score, "Grid deployed");
                     active_grids.insert(ag.symbol.clone(), ag);
@@ -298,21 +310,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
 
             match scanner::scan(&client, &ap_cfg.scanner).await {
                 Ok(results) => {
-                    evaluate_and_switch(
-                        &client,
-                        &mut active_grids,
-                        &results,
-                        equity,
-                        &ap_cfg,
-                        &cfg,
-                        &engine,
-                        &db,
-                        &alerter,
-                        &retry_policy,
-                        &breaker,
-                        dry_run,
-                    )
-                    .await;
+                    evaluate_and_switch(&ctx, &mut active_grids, &results, equity).await;
                 }
                 Err(e) => {
                     warn!(err = %e, "periodic scan failed");
@@ -378,20 +376,18 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
 }
 
 /// Deploy a new grid on a scanned symbol.
-#[allow(clippy::too_many_arguments)]
-async fn deploy_grid(
-    client: &bybit::rest::Client,
-    scan: &ScanResult,
-    equity: f64,
-    _ap_cfg: &AutoPilotConfig,
-    bot_cfg: &BotConfig,
-    engine: &Arc<Mutex<RiskEngine>>,
-    db: &Arc<Mutex<Db>>,
-    alerter: &Arc<Alerter>,
-    retry_policy: &RetryPolicy,
-    breaker: &Arc<CircuitBreaker>,
-    dry_run: bool,
-) -> Result<ActiveGrid> {
+async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<ActiveGrid> {
+    let ApCtx {
+        client,
+        engine,
+        db,
+        alerter,
+        retry_policy,
+        breaker,
+        dry_run,
+        bot_cfg,
+        ..
+    } = ctx;
     let symbol = &scan.symbol;
     info!(symbol = %symbol, score = scan.score, "Deploying grid...");
 
@@ -474,7 +470,7 @@ async fn deploy_grid(
     }
 
     // Cancel any existing orders on this symbol
-    if !dry_run {
+    if !*dry_run {
         let _ = client.cancel_all_spot(symbol).await;
     }
 
@@ -506,7 +502,7 @@ async fn deploy_grid(
             uuid::Uuid::new_v4().as_simple()
         );
 
-        if dry_run {
+        if *dry_run {
             let fake_id = format!("DRY-{}", uuid::Uuid::new_v4().as_simple());
             g.orders.insert(
                 p.level_index,
@@ -744,20 +740,11 @@ async fn reconcile_grid(
 }
 
 /// Evaluate scan results and switch grids if better opportunities exist.
-#[allow(clippy::too_many_arguments)]
 async fn evaluate_and_switch(
-    client: &bybit::rest::Client,
+    ctx: &ApCtx<'_>,
     active_grids: &mut HashMap<String, ActiveGrid>,
     scan_results: &[ScanResult],
     equity: f64,
-    ap_cfg: &AutoPilotConfig,
-    bot_cfg: &BotConfig,
-    engine: &Arc<Mutex<RiskEngine>>,
-    db: &Arc<Mutex<Db>>,
-    alerter: &Arc<Alerter>,
-    retry_policy: &RetryPolicy,
-    breaker: &Arc<CircuitBreaker>,
-    dry_run: bool,
 ) {
     let suitable: Vec<&ScanResult> = scan_results
         .iter()
@@ -787,8 +774,8 @@ async fn evaluate_and_switch(
         let current_score = ag.score;
         if let Some(best) = suitable.first()
             && best.symbol != *symbol
-            && best.score > current_score + ap_cfg.switch_threshold
-            && active_grids.len() >= ap_cfg.max_grids
+            && best.score > current_score + ctx.ap_cfg.switch_threshold
+            && active_grids.len() >= ctx.ap_cfg.max_grids
         {
             // Find the worst performing grid
             let worst = active_grids.iter().min_by(|a, b| {
@@ -815,13 +802,15 @@ async fn evaluate_and_switch(
     for symbol in &to_remove {
         if let Some(mut ag) = active_grids.remove(symbol) {
             info!(symbol = %symbol, pnl = ag.total_pnl, "Winding down grid");
-            if !dry_run && let Err(e) = client.cancel_all_spot(symbol).await {
+            if !ctx.dry_run
+                && let Err(e) = ctx.client.cancel_all_spot(symbol).await
+            {
                 warn!(symbol = %symbol, err = %e, "cancel_all failed during wind-down");
             }
             for (_, order) in ag.grid.orders.drain() {
-                let _ = db.lock().await.mark_cancelled(&order.order_id);
+                let _ = ctx.db.lock().await.mark_cancelled(&order.order_id);
             }
-            alerter
+            ctx.alerter
                 .lifecycle(&format!(
                     "🔴 Grid wound down: {} | PnL: {:+.2}",
                     symbol, ag.total_pnl,
@@ -831,7 +820,7 @@ async fn evaluate_and_switch(
     }
 
     // Deploy new grids if we have capacity
-    let available_slots = ap_cfg.max_grids.saturating_sub(active_grids.len());
+    let available_slots = ctx.ap_cfg.max_grids.saturating_sub(active_grids.len());
     if available_slots > 0 {
         let new_candidates: Vec<&ScanResult> = suitable
             .iter()
@@ -841,21 +830,7 @@ async fn evaluate_and_switch(
             .collect();
 
         for candidate in new_candidates {
-            match deploy_grid(
-                client,
-                candidate,
-                equity,
-                ap_cfg,
-                bot_cfg,
-                engine,
-                db,
-                alerter,
-                retry_policy,
-                breaker,
-                dry_run,
-            )
-            .await
-            {
+            match deploy_grid(ctx, candidate, equity).await {
                 Ok(ag) => {
                     info!(symbol = %ag.symbol, score = ag.score, "New grid deployed via auto-switch");
                     active_grids.insert(ag.symbol.clone(), ag);

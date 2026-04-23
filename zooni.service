@@ -1,14 +1,14 @@
 [Unit]
-Description=Trading Bot - Grid Strategy
+Description=Zooni - Autonomous Trading Bot
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=trading
-Group=trading
-WorkingDirectory=/opt/trading-bot
-ExecStart=/opt/trading-bot/trading-bot /opt/trading-bot/config.toml
+User=zooni
+Group=zooni
+WorkingDirectory=/opt/zooni
+ExecStart=/opt/zooni/zooni /opt/zooni/config.toml
 Restart=always
 RestartSec=10
 Environment=RUST_LOG=info
@@ -17,12 +17,17 @@ Environment=RUST_LOG=info
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/trading-bot
+ReadWritePaths=/opt/zooni
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
 
 # Resource limits
 LimitNOFILE=65536
 MemoryMax=512M
+CPUQuota=200%
 
 [Install]
 WantedBy=multi-user.target

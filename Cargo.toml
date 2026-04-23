@@ -1,18 +1,27 @@
 [package]
-name = "trading-bot"
+name = "zooni"
 version = "2026.4.23"
 edition = "2024"
+description = "Autonomous algorithmic trading bot with grid strategies, market intelligence, and multi-venue support"
+authors = ["Hamid Ali Syed <hamidrixvi@gmail.com>"]
+repository = "https://github.com/syedhamidali/zooni"
+homepage = "https://github.com/syedhamidali/zooni"
+license = "MIT"
+keywords = ["trading", "algorithmic-trading", "grid-trading", "crypto", "bybit"]
+categories = ["finance", "command-line-utilities"]
+rust-version = "1.85"
+readme = "README.md"
 
 [[bin]]
-name = "trading-bot"
+name = "zooni"
 path = "src/main.rs"
 
 [[bin]]
-name = "backtest"
+name = "zooni-backtest"
 path = "src/bin/backtest.rs"
 
 [[bin]]
-name = "scan"
+name = "zooni-scan"
 path = "src/bin/scan.rs"
 
 [dependencies]

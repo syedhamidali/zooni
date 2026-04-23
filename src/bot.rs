@@ -24,6 +24,19 @@ use crate::tui::{GridLevelDisplay, TuiState};
 use crate::types::Side;
 use crate::venues::bybit;
 
+/// Shared context passed to helper functions instead of many individual args.
+struct BotCtx<'a> {
+    client: &'a bybit::rest::Client,
+    engine: &'a Arc<Mutex<RiskEngine>>,
+    symbol: &'a str,
+    db: &'a Arc<Mutex<Db>>,
+    alerter: &'a Arc<Alerter>,
+    retry_policy: &'a RetryPolicy,
+    breaker: &'a Arc<CircuitBreaker>,
+    dry_run: bool,
+    metrics: &'a Arc<Metrics>,
+}
+
 /// Run the bot, optionally sharing TUI state for dashboard rendering.
 pub async fn run(cfg: BotConfig) -> Result<()> {
     run_inner(cfg, None).await
@@ -367,7 +380,20 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         }
     }
 
-    // -- 13. Place initial grid (only for levels not already occupied) ---------
+    // -- 13. Build shared context for grid helpers --------------------------------
+    let ctx = BotCtx {
+        client: &client,
+        engine: &engine,
+        symbol: &cfg.grid.symbol,
+        db: &db,
+        alerter: &alerter,
+        retry_policy: &retry_policy,
+        breaker: &breaker,
+        dry_run,
+        metrics: &metrics,
+    };
+
+    // -- 13b. Place initial grid (only for levels not already occupied) ---------
     if grid.orders.is_empty() {
         let plan = grid.plan_initial(mid);
         info!(plan_size = plan.len(), "placing initial grid");
@@ -375,20 +401,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
             if kill.load(Ordering::SeqCst) {
                 break;
             }
-            place_with_risk(
-                &client,
-                &mut grid,
-                p,
-                &engine,
-                &cfg.grid.symbol,
-                &db,
-                &alerter,
-                &retry_policy,
-                &breaker,
-                dry_run,
-                &metrics,
-            )
-            .await;
+            place_with_risk(&ctx, &mut grid, p).await;
         }
         info!(open_count = grid.orders.len(), "initial placement complete");
     } else {
@@ -405,20 +418,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                 if kill.load(Ordering::SeqCst) {
                     break;
                 }
-                place_with_risk(
-                    &client,
-                    &mut grid,
-                    p,
-                    &engine,
-                    &cfg.grid.symbol,
-                    &db,
-                    &alerter,
-                    &retry_policy,
-                    &breaker,
-                    dry_run,
-                    &metrics,
-                )
-                .await;
+                place_with_risk(&ctx, &mut grid, p).await;
             }
         }
     }
@@ -525,21 +525,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
             }
         }
 
-        match reconcile_once(
-            &client,
-            &mut grid,
-            &engine,
-            &cfg.grid.symbol,
-            &db,
-            &alerter,
-            &retry_policy,
-            &breaker,
-            dry_run,
-            regime_paused,
-            &metrics,
-        )
-        .await
-        {
+        match reconcile_once(&ctx, &mut grid, regime_paused).await {
             Ok(_) => breaker.record_success(),
             Err(e) => {
                 breaker.record_failure();
@@ -754,20 +740,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                         if kill.load(Ordering::SeqCst) {
                             break;
                         }
-                        place_with_risk(
-                            &client,
-                            &mut grid,
-                            p,
-                            &engine,
-                            &cfg.grid.symbol,
-                            &db,
-                            &alerter,
-                            &retry_policy,
-                            &breaker,
-                            dry_run,
-                            &metrics,
-                        )
-                        .await;
+                        place_with_risk(&ctx, &mut grid, p).await;
                     }
                     alerter
                         .lifecycle(&format!(
@@ -848,20 +821,18 @@ async fn check_clock_sync(client: &bybit::rest::Client) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn place_with_risk(
-    client: &bybit::rest::Client,
-    grid: &mut Grid,
-    p: &PlannedOrder,
-    engine: &Arc<Mutex<RiskEngine>>,
-    symbol: &str,
-    db: &Arc<Mutex<Db>>,
-    alerter: &Arc<Alerter>,
-    retry_policy: &RetryPolicy,
-    breaker: &Arc<CircuitBreaker>,
-    dry_run: bool,
-    metrics: &Arc<Metrics>,
-) {
+async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
+    let BotCtx {
+        client,
+        engine,
+        symbol,
+        db,
+        alerter,
+        retry_policy,
+        breaker,
+        dry_run,
+        metrics,
+    } = ctx;
     let price: f64 = p.price_str.parse().unwrap_or(0.0);
     let qty: f64 = p.qty_str.parse().unwrap_or(0.0);
     if price <= 0.0 || qty <= 0.0 {
@@ -903,7 +874,7 @@ async fn place_with_risk(
         uuid::Uuid::new_v4().as_simple()
     );
 
-    if dry_run {
+    if *dry_run {
         let fake_id = format!("DRY-{}", uuid::Uuid::new_v4().as_simple());
         info!(
             level = p.level_index,
@@ -1012,27 +983,14 @@ async fn place_with_risk(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn reconcile_once(
-    client: &bybit::rest::Client,
-    grid: &mut Grid,
-    engine: &Arc<Mutex<RiskEngine>>,
-    symbol: &str,
-    db: &Arc<Mutex<Db>>,
-    alerter: &Arc<Alerter>,
-    retry_policy: &RetryPolicy,
-    breaker: &Arc<CircuitBreaker>,
-    dry_run: bool,
-    regime_paused: bool,
-    metrics: &Arc<Metrics>,
-) -> Result<()> {
-    if dry_run {
+async fn reconcile_once(ctx: &BotCtx<'_>, grid: &mut Grid, regime_paused: bool) -> Result<()> {
+    if ctx.dry_run {
         // In dry-run, simulate random fills for testing
         return Ok(());
     }
 
-    let open = with_retry(retry_policy, "open_orders", || {
-        client.open_orders_spot(symbol)
+    let open = with_retry(ctx.retry_policy, "open_orders", || {
+        ctx.client.open_orders_spot(ctx.symbol)
     })
     .await?;
 
@@ -1091,11 +1049,11 @@ async fn reconcile_once(
 
         // Record fill in DB
         {
-            let db_guard = db.lock().await;
+            let db_guard = ctx.db.lock().await;
             let _ = db_guard.mark_filled(&order_id, fill_price, fill_qty);
             let _ = db_guard.insert_fill(&FillRow {
                 order_id: order_id.clone(),
-                symbol: symbol.to_string(),
+                symbol: ctx.symbol.to_string(),
                 side,
                 price: fill_price,
                 qty: fill_qty,
@@ -1106,13 +1064,13 @@ async fn reconcile_once(
         }
 
         // Record metrics + dashboard fill entry
-        metrics.record_fill(matches!(side, Side::Buy));
+        ctx.metrics.record_fill(matches!(side, Side::Buy));
         {
             let side_str = match side {
                 Side::Buy => "BUY",
                 Side::Sell => "SELL",
             };
-            metrics
+            ctx.metrics
                 .series
                 .lock()
                 .await
@@ -1131,34 +1089,21 @@ async fn reconcile_once(
             Side::Buy => "BUY",
             Side::Sell => "SELL",
         };
-        alerter
-            .fill(symbol, side_str, fill_price, fill_qty, realised_pnl)
+        ctx.alerter
+            .fill(ctx.symbol, side_str, fill_price, fill_qty, realised_pnl)
             .await;
 
         // Release open-order exposure
         {
-            let mut guard = engine.lock().await;
-            guard.on_fill(Market::Crypto, symbol, "grid", -notional);
+            let mut guard = ctx.engine.lock().await;
+            guard.on_fill(Market::Crypto, ctx.symbol, "grid", -notional);
         }
 
         // Place replacement order (skip if regime is unfavorable)
         if regime_paused {
             info!(level, ?side, "regime paused — skipping replacement order");
         } else if let Some(plan) = grid.plan_replacement(level, side) {
-            place_with_risk(
-                client,
-                grid,
-                &plan,
-                engine,
-                symbol,
-                db,
-                alerter,
-                retry_policy,
-                breaker,
-                dry_run,
-                metrics,
-            )
-            .await;
+            place_with_risk(ctx, grid, &plan).await;
         } else {
             info!(level, ?side, "no replacement — reached grid edge");
         }
