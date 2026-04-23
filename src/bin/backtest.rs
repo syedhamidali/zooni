@@ -7,8 +7,8 @@
 
 use anyhow::{Context, Result};
 
-use trading_bot::backtest::{generate_synthetic_data, optimize_grid, parse_csv, run_backtest};
-use trading_bot::config;
+use zooni::backtest::{generate_synthetic_data, optimize_grid, parse_csv, run_backtest};
+use zooni::config;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -130,8 +130,8 @@ fn main() -> Result<()> {
             println!("  Last 10 fills:");
             for f in result.fills.iter().rev().take(10).rev() {
                 let side = match f.side {
-                    trading_bot::types::Side::Buy => "BUY ",
-                    trading_bot::types::Side::Sell => "SELL",
+                    zooni::types::Side::Buy => "BUY ",
+                    zooni::types::Side::Sell => "SELL",
                 };
                 println!(
                     "    [{:>5}] {} lvl={:<3} price={:<12.2} qty={:<10.6} pnl={:+.4}",

@@ -75,7 +75,6 @@ impl Client {
         bail!("zerodha::instruments not yet implemented")
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn place_order(
         &self,
         _tradingsymbol: &str,

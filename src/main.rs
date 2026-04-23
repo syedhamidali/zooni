@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 
-use trading_bot::config;
+use zooni::config;
 
 const VERSION: &str = env!("ZOONI_VERSION");
 const GIT_HASH: &str = match option_env!("ZOONI_GIT_HASH") {
@@ -75,10 +75,10 @@ async fn main() -> Result<()> {
     }
 
     if autopilot {
-        trading_bot::autopilot::run(cfg).await
+        zooni::autopilot::run(cfg).await
     } else if use_tui {
-        trading_bot::tui::run_with_tui(cfg).await
+        zooni::tui::run_with_tui(cfg).await
     } else {
-        trading_bot::bot::run(cfg).await
+        zooni::bot::run(cfg).await
     }
 }

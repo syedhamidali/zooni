@@ -10,9 +10,9 @@
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 
-use trading_bot::config::BotConfig;
-use trading_bot::scanner::{self, ScannerConfig};
-use trading_bot::venues::bybit;
+use zooni::config::BotConfig;
+use zooni::scanner::{self, ScannerConfig};
+use zooni::venues::bybit;
 
 #[tokio::main]
 async fn main() -> Result<()> {
