@@ -34,3 +34,4 @@ Zooni uses date-based versioning (`YYYY.M.D`). Check your version:
 ./trading-bot --version
 # zooni 2026.4.23 (29db06d)
 ```
+
