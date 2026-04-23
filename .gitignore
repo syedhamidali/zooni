@@ -6,3 +6,4 @@ config.toml
 *.key
 *.pem
 *.secret
+docs/book/

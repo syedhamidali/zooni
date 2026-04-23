@@ -1,0 +1,15 @@
+[book]
+title = "Zooni"
+authors = ["syedhamidali"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/syedhamidali/zooni"
+site-url = "/"
+no-section-label = false
