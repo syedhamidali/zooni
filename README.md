@@ -1,6 +1,9 @@
 # Zooni
 
 [![CI](https://github.com/syedhamidali/zooni/actions/workflows/ci.yml/badge.svg)](https://github.com/syedhamidali/zooni/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/syedhamidali/zooni/branch/main/graph/badge.svg)](https://codecov.io/gh/syedhamidali/zooni)
+[![Security Audit](https://github.com/syedhamidali/zooni/actions/workflows/audit.yml/badge.svg)](https://github.com/syedhamidali/zooni/actions/workflows/audit.yml)
+[![Dependency Check](https://github.com/syedhamidali/zooni/actions/workflows/deny.yml/badge.svg)](https://github.com/syedhamidali/zooni/actions/workflows/deny.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
@@ -159,19 +162,24 @@ sqlite3 zooni.db "SELECT date(filled_at) as day, SUM(realised_pnl) as pnl, COUNT
 ## Testing
 
 ```bash
-cargo test --all           # 64 tests
+cargo test --all           # 80+ unit & integration tests
 cargo clippy --all-targets # lint
 cargo fmt --all -- --check # format check
+cargo bench                # criterion benchmarks
 ```
 
 ## CI/CD
 
 GitHub Actions on every push and PR to `main`:
 
-1. **Check** — `cargo fmt` + `cargo clippy` (with `-D warnings`)
-2. **Test** — `cargo test --all`
-3. **Build** — release binaries uploaded as artifacts
-4. **Release** — auto-creates a GitHub release with date-based tag
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| **CI** | push, PR | Auto-format, clippy, tests, release build + artifact upload |
+| **Coverage** | push, PR | cargo-tarpaulin → Codecov |
+| **Security Audit** | push, PR, weekly | cargo-audit via RustSec advisory DB |
+| **Dependency Check** | push, PR | cargo-deny (licenses, bans, sources) |
+| **Auto-Release** | push to main | Date-tagged GitHub release with binaries |
+| **Deploy Docs** | push (docs changed) | mdBook → Cloudflare Pages (password-gated) |
 
 ## Versioning
 

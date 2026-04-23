@@ -115,15 +115,14 @@ jobs:
           name: zooni-linux-x86_64
           path: artifacts/
 
+      - name: Make binaries executable
+        run: chmod +x artifacts/zooni artifacts/zooni-backtest artifacts/zooni-scan
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: "Zooni ${{ steps.version.outputs.tag }}"
-          body: |
-            Automated release from CI.
-            Version: ${{ steps.version.outputs.version }}
-            Commit: ${{ github.sha }}
           files: |
             artifacts/zooni
             artifacts/zooni-backtest
