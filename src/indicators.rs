@@ -289,4 +289,123 @@ mod tests {
         let a = atr(&highs, &lows, &closes, 3).unwrap();
         assert!(a > 0.0);
     }
+
+    #[test]
+    fn sma_returns_none_when_insufficient_data() {
+        assert_eq!(sma(&[1.0, 2.0], 5), None);
+        assert_eq!(sma(&[], 1), None);
+        assert_eq!(sma(&[1.0], 0), None);
+    }
+
+    #[test]
+    fn ema_series_single_element() {
+        let result = ema_series(&[42.0], 10);
+        assert_eq!(result, vec![42.0]);
+    }
+
+    #[test]
+    fn ema_series_empty() {
+        assert!(ema_series(&[], 5).is_empty());
+    }
+
+    #[test]
+    fn rsi_all_losses_is_zero() {
+        // All decreasing → RSI near 0
+        let data: Vec<f64> = (0..20).rev().map(|i| 100.0 + i as f64).collect();
+        let r = rsi(&data, 14).unwrap();
+        assert!(r < 1.0, "All losses RSI should be ~0: {r}");
+    }
+
+    #[test]
+    fn rsi_insufficient_data() {
+        assert_eq!(rsi(&[1.0, 2.0, 3.0], 14), None);
+    }
+
+    #[test]
+    fn bollinger_insufficient_data() {
+        assert_eq!(bollinger_bands(&[1.0, 2.0], 20, 2.0), None);
+    }
+
+    #[test]
+    fn bollinger_with_variance() {
+        // Data with actual spread should have upper > lower
+        let data: Vec<f64> = (0..20)
+            .map(|i| 100.0 + (i as f64 * 0.5).sin() * 5.0)
+            .collect();
+        let (upper, mid, lower, bw) = bollinger_bands(&data, 20, 2.0).unwrap();
+        assert!(upper > mid, "upper ({upper}) > mid ({mid})");
+        assert!(mid > lower, "mid ({mid}) > lower ({lower})");
+        assert!(bw > 0.0, "bandwidth should be positive");
+    }
+
+    #[test]
+    fn adx_insufficient_data() {
+        let small = vec![1.0; 10];
+        assert_eq!(adx(&small, &small, &small, 14), None);
+    }
+
+    #[test]
+    fn adx_trending_data_has_high_adx() {
+        // Strong uptrend: each candle higher than last
+        let n = 60;
+        let highs: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 2.0 + 1.0).collect();
+        let lows: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 2.0 - 1.0).collect();
+        let closes: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let (adx_val, plus_di, minus_di) = adx(&highs, &lows, &closes, 14).unwrap();
+        assert!(adx_val > 20.0, "Strong trend ADX should be high: {adx_val}");
+        assert!(plus_di > minus_di, "+DI should dominate in uptrend");
+    }
+
+    #[test]
+    fn atr_insufficient_data() {
+        assert_eq!(atr(&[1.0], &[1.0], &[1.0], 3), None);
+    }
+
+    #[test]
+    fn vwap_basic() {
+        let highs = vec![102.0, 104.0];
+        let lows = vec![98.0, 96.0];
+        let closes = vec![100.0, 100.0];
+        let volumes = vec![1000.0, 1000.0];
+        let v = vwap(&highs, &lows, &closes, &volumes).unwrap();
+        // typical prices: (102+98+100)/3=100, (104+96+100)/3=100
+        assert!((v - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn vwap_zero_volume_returns_none() {
+        assert_eq!(vwap(&[100.0], &[99.0], &[100.0], &[0.0]), None);
+    }
+
+    #[test]
+    fn vwap_empty_returns_none() {
+        assert_eq!(vwap(&[], &[], &[], &[]), None);
+    }
+
+    #[test]
+    fn std_dev_zero_for_constant() {
+        assert!((std_dev(&[5.0, 5.0, 5.0]) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn std_dev_known_value() {
+        let data = vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let sd = std_dev(&data);
+        assert!((sd - 2.0).abs() < 0.01, "std_dev should be ~2.0: {sd}");
+    }
+
+    #[test]
+    fn log_return_stats_basic() {
+        let closes = vec![100.0, 110.0, 100.0];
+        let (mean, sd) = log_return_stats(&closes).unwrap();
+        // returns: ln(1.1) ≈ 0.0953, ln(100/110) ≈ -0.0953, mean ≈ 0
+        assert!(mean.abs() < 0.01, "mean log return should be ~0: {mean}");
+        assert!(sd > 0.0, "std dev should be positive");
+    }
+
+    #[test]
+    fn log_return_stats_insufficient() {
+        assert_eq!(log_return_stats(&[100.0]), None);
+        assert_eq!(log_return_stats(&[]), None);
+    }
 }
