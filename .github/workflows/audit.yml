@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: '0 6 * * 1' # every Monday at 06:00 UTC
 
+permissions:
+  checks: write
+  contents: read
+
 jobs:
   audit:
     name: Cargo Audit
