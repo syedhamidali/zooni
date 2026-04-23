@@ -8,11 +8,10 @@ fn main() {
     if let Ok(output) = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("cargo:rustc-env=ZOONI_GIT_HASH={hash}");
-        }
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        println!("cargo:rustc-env=ZOONI_GIT_HASH={hash}");
     }
 
     println!("cargo:rerun-if-changed=.git/HEAD");
@@ -21,14 +20,12 @@ fn main() {
 
 /// Minimal date without pulling in chrono at build time.
 fn chrono_lite_date() -> String {
-    // Use the `date` command (works on macOS/Linux)
     if let Ok(output) = std::process::Command::new("date")
         .args(["+%Y.%-m.%-d"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            return String::from_utf8_lossy(&output.stdout).trim().to_string();
-        }
+        return String::from_utf8_lossy(&output.stdout).trim().to_string();
     }
     // Fallback: use Cargo.toml version
     env!("CARGO_PKG_VERSION").to_string()
