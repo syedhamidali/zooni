@@ -3,7 +3,9 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
-ignore = []
+ignore = [
+    "RUSTSEC-2024-0436", # paste crate unmaintained — transitive dep of ratatui, no action available
+]
 
 [licenses]
 allow = [
