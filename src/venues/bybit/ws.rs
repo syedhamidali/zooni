@@ -56,7 +56,7 @@ pub async fn run_public_ticker(symbol: &str) -> Result<()> {
         "op": "subscribe",
         "args": [format!("tickers.{symbol}")],
     });
-    ws.send(Message::Text(sub.to_string()))
+    ws.send(Message::Text(sub.to_string().into()))
         .await
         .context("subscribe send failed")?;
     info!(symbol, "subscribe sent");
@@ -68,7 +68,7 @@ pub async fn run_public_ticker(symbol: &str) -> Result<()> {
         tokio::select! {
             _ = ping_tick.tick() => {
                 let ping = serde_json::json!({"op": "ping"});
-                if let Err(e) = ws.send(Message::Text(ping.to_string())).await {
+                if let Err(e) = ws.send(Message::Text(ping.to_string().into())).await {
                     error!(err = %e, "ping send failed, exiting");
                     break;
                 }

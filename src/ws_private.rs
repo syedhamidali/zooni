@@ -105,7 +105,7 @@ async fn run_once(
         .unwrap_or(0);
     let sign_payload = format!("GET/realtime{expires}");
     let signature = {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha2::Sha256;
         type HmacSha256 = Hmac<Sha256>;
         let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes()).unwrap();
@@ -117,7 +117,7 @@ async fn run_once(
         "op": "auth",
         "args": [api_key, expires, signature],
     });
-    ws.send(Message::Text(auth.to_string()))
+    ws.send(Message::Text(auth.to_string().into()))
         .await
         .context("auth send failed")?;
     debug!("auth sent, waiting for response");
@@ -127,7 +127,7 @@ async fn run_once(
         "op": "subscribe",
         "args": ["order"],
     });
-    ws.send(Message::Text(sub.to_string()))
+    ws.send(Message::Text(sub.to_string().into()))
         .await
         .context("subscribe send failed")?;
     info!("subscribed to order updates");
@@ -140,7 +140,7 @@ async fn run_once(
         tokio::select! {
             _ = ping_tick.tick() => {
                 let ping = serde_json::json!({"op": "ping"});
-                if let Err(e) = ws.send(Message::Text(ping.to_string())).await {
+                if let Err(e) = ws.send(Message::Text(ping.to_string().into())).await {
                     error!(err = %e, "ping send failed");
                     break;
                 }
