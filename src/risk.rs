@@ -1,0 +1,217 @@
+#![allow(dead_code)]
+//! Risk limits + kill switch. Pure state + pure checks, no I/O.
+//!
+//! Strategies consult `RiskEngine::pretrade_check(...)` before submitting an order.
+//! Fills update exposure via `on_fill(...)`. PnL is updated by the bot loop via
+//! `set_daily_pnl` / `set_equity`. The kill switch is atomic so any task can trip it.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy)]
+pub struct RiskConfig {
+    /// Fraction of equity allowed in open exposure total. 0..=1.
+    pub max_total_exposure: f64,
+    pub max_per_market: f64,
+    pub max_per_symbol: f64,
+    pub max_per_strategy: f64,
+    /// Daily PnL as negative fraction of starting equity that trips the pause.
+    pub daily_loss_limit: f64,
+    pub weekly_loss_limit: f64,
+    pub max_drawdown: f64,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            max_total_exposure: 0.80,
+            max_per_market: 0.40,
+            max_per_symbol: 0.20,
+            max_per_strategy: 0.15,
+            daily_loss_limit: 0.05,
+            weekly_loss_limit: 0.10,
+            max_drawdown: 0.15,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reject {
+    KillSwitchTripped,
+    DailyLossLimit,
+    WeeklyLossLimit,
+    DrawdownLimit,
+    ExceedsTotalExposure,
+    ExceedsMarketExposure,
+    ExceedsSymbolExposure,
+    ExceedsStrategyExposure,
+    NoEquity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Market { Crypto, NseEquity, NseFo, Mcx, UsEquity }
+
+#[derive(Debug)]
+pub struct RiskEngine {
+    cfg: RiskConfig,
+    kill: Arc<AtomicBool>,
+    equity: f64,
+    peak_equity: f64,
+    daily_pnl: f64,
+    weekly_pnl: f64,
+    exposure_total: f64,
+    exposure_market: HashMap<Market, f64>,
+    exposure_symbol: HashMap<String, f64>,
+    exposure_strategy: HashMap<String, f64>,
+}
+
+impl RiskEngine {
+    pub fn new(cfg: RiskConfig, initial_equity: f64) -> (Self, Arc<AtomicBool>) {
+        let kill = Arc::new(AtomicBool::new(false));
+        let engine = Self {
+            cfg,
+            kill: kill.clone(),
+            equity: initial_equity,
+            peak_equity: initial_equity,
+            daily_pnl: 0.0,
+            weekly_pnl: 0.0,
+            exposure_total: 0.0,
+            exposure_market: HashMap::new(),
+            exposure_symbol: HashMap::new(),
+            exposure_strategy: HashMap::new(),
+        };
+        (engine, kill)
+    }
+
+    pub fn kill_switch(&self) -> Arc<AtomicBool> { self.kill.clone() }
+    pub fn trip_kill_switch(&self) { self.kill.store(true, Ordering::SeqCst); }
+    pub fn reset_kill_switch(&self) { self.kill.store(false, Ordering::SeqCst); }
+
+    pub fn set_equity(&mut self, equity: f64) {
+        self.equity = equity;
+        if equity > self.peak_equity { self.peak_equity = equity; }
+    }
+
+    pub fn set_daily_pnl(&mut self, pnl: f64) { self.daily_pnl = pnl; }
+    pub fn set_weekly_pnl(&mut self, pnl: f64) { self.weekly_pnl = pnl; }
+
+    /// Called after a fill. `notional` is the absolute USD-equivalent exposure delta
+    /// (+ for opening, − for closing). Markets may use different currencies; caller
+    /// normalises to equity currency before calling.
+    pub fn on_fill(
+        &mut self,
+        market: Market,
+        symbol: &str,
+        strategy: &str,
+        notional_delta: f64,
+    ) {
+        self.exposure_total = (self.exposure_total + notional_delta).max(0.0);
+        let m = self.exposure_market.entry(market).or_insert(0.0);
+        *m = (*m + notional_delta).max(0.0);
+        let s = self.exposure_symbol.entry(symbol.to_string()).or_insert(0.0);
+        *s = (*s + notional_delta).max(0.0);
+        let st = self.exposure_strategy.entry(strategy.to_string()).or_insert(0.0);
+        *st = (*st + notional_delta).max(0.0);
+    }
+
+    pub fn pretrade_check(
+        &self,
+        market: Market,
+        symbol: &str,
+        strategy: &str,
+        notional: f64,
+    ) -> Result<(), Reject> {
+        if self.kill.load(Ordering::SeqCst) { return Err(Reject::KillSwitchTripped); }
+        if self.equity <= 0.0 { return Err(Reject::NoEquity); }
+
+        if self.daily_pnl <= -self.cfg.daily_loss_limit * self.equity {
+            return Err(Reject::DailyLossLimit);
+        }
+        if self.weekly_pnl <= -self.cfg.weekly_loss_limit * self.equity {
+            return Err(Reject::WeeklyLossLimit);
+        }
+        if self.peak_equity > 0.0 {
+            let dd = (self.peak_equity - self.equity) / self.peak_equity;
+            if dd >= self.cfg.max_drawdown { return Err(Reject::DrawdownLimit); }
+        }
+
+        let cap_total = self.cfg.max_total_exposure * self.equity;
+        if self.exposure_total + notional > cap_total { return Err(Reject::ExceedsTotalExposure); }
+
+        let cap_market = self.cfg.max_per_market * self.equity;
+        let cur_market = *self.exposure_market.get(&market).unwrap_or(&0.0);
+        if cur_market + notional > cap_market { return Err(Reject::ExceedsMarketExposure); }
+
+        let cap_symbol = self.cfg.max_per_symbol * self.equity;
+        let cur_symbol = *self.exposure_symbol.get(symbol).unwrap_or(&0.0);
+        if cur_symbol + notional > cap_symbol { return Err(Reject::ExceedsSymbolExposure); }
+
+        let cap_strategy = self.cfg.max_per_strategy * self.equity;
+        let cur_strategy = *self.exposure_strategy.get(strategy).unwrap_or(&0.0);
+        if cur_strategy + notional > cap_strategy { return Err(Reject::ExceedsStrategyExposure); }
+
+        Ok(())
+    }
+
+    pub fn equity(&self) -> f64 { self.equity }
+    pub fn daily_pnl(&self) -> f64 { self.daily_pnl }
+    pub fn exposure_total(&self) -> f64 { self.exposure_total }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine(eq: f64) -> RiskEngine {
+        RiskEngine::new(RiskConfig::default(), eq).0
+    }
+
+    #[test]
+    fn accepts_trade_within_limits() {
+        let e = engine(10_000.0);
+        // 20% symbol limit = 2000; 15% strategy = 1500. Notional 1000 is under both.
+        assert_eq!(e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 1000.0), Ok(()));
+    }
+
+    #[test]
+    fn rejects_when_over_symbol_limit() {
+        let e = engine(10_000.0);
+        // 20% symbol cap = 2000. Requesting 2500 fails.
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 2500.0),
+            Err(Reject::ExceedsSymbolExposure),
+        );
+    }
+
+    #[test]
+    fn rejects_when_kill_switch_tripped() {
+        let e = engine(10_000.0);
+        e.trip_kill_switch();
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 100.0),
+            Err(Reject::KillSwitchTripped),
+        );
+    }
+
+    #[test]
+    fn rejects_after_daily_loss_limit() {
+        let mut e = engine(10_000.0);
+        e.set_daily_pnl(-600.0); // -6%, past 5% daily limit
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 100.0),
+            Err(Reject::DailyLossLimit),
+        );
+    }
+
+    #[test]
+    fn fills_accumulate_exposure_and_eventually_reject() {
+        let mut e = engine(10_000.0);
+        e.on_fill(Market::Crypto, "BTCUSDT", "trend", 1500.0);
+        // Symbol is now at 1500; cap is 2000; requesting 600 more should fail.
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 600.0),
+            Err(Reject::ExceedsSymbolExposure),
+        );
+    }
+}

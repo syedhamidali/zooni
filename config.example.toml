@@ -1,0 +1,87 @@
+# Trading Bot — example config.
+# Copy to `config.toml` and fill in your credentials.
+# DO NOT commit config.toml (it contains secrets).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bot-level settings
+# ─────────────────────────────────────────────────────────────────────────────
+[bot]
+dry_run       = false          # true = simulate orders, no exchange calls
+db_path       = "trading-bot.db"  # SQLite database for order journal + P&L
+max_retries   = 3              # retries per API call (exponential backoff)
+circuit_breaker_threshold = 5  # consecutive failures before pausing
+circuit_breaker_cooldown_secs = 60
+shutdown_wait_secs = 10        # seconds to wait for in-flight orders at shutdown
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bybit credentials
+# ─────────────────────────────────────────────────────────────────────────────
+[bybit]
+api_key        = "YOUR_API_KEY"
+api_secret     = "YOUR_API_SECRET"
+testnet        = true          # true = use testnet endpoints
+recv_window_ms = 5000
+account_type   = "UNIFIED"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Grid strategy
+# ─────────────────────────────────────────────────────────────────────────────
+[grid]
+symbol             = "BTCUSDT"
+lower_price        = 60000.0
+upper_price        = 90000.0
+levels             = 20        # more levels = tighter spacing = more trades
+qty_per_level_base = 0.001     # base asset per grid line (e.g., BTC)
+poll_secs          = 3         # reconciliation polling interval
+cancel_existing_on_start = true
+
+# Dynamic grid rebalancing: shift grid when price nears the edge
+auto_rebalance = false
+
+# Trailing profit: threshold in quote currency (0 = disabled)
+trailing_profit_threshold = 0.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Risk management
+# ─────────────────────────────────────────────────────────────────────────────
+[risk]
+starting_equity_quote = 10000.0   # USDT — set to your actual balance
+max_total_exposure    = 0.80      # 80% of equity
+max_per_market        = 0.40
+max_per_symbol        = 0.20
+max_per_strategy      = 0.15
+daily_loss_limit      = 0.05      # 5% daily loss → pause
+weekly_loss_limit     = 0.10      # 10% weekly loss → pause
+max_drawdown          = 0.15      # 15% drawdown from peak → pause
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alerts (optional — omit section to disable)
+# ─────────────────────────────────────────────────────────────────────────────
+[alerts]
+# Slack incoming webhook, Discord webhook, or any HTTP POST endpoint
+# webhook_url = "https://hooks.slack.com/services/T.../B.../..."
+on_fill         = false     # alert on every fill (can be noisy)
+on_risk_breach  = true      # alert when risk limits hit
+on_lifecycle    = true      # alert on startup/shutdown
+on_error        = true      # alert on API errors
+pnl_summary_interval_secs = 3600  # hourly P&L summary (0 = disabled)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-pilot mode (optional)
+# When enabled, the bot autonomously scans markets, picks the best symbol(s),
+# configures grid parameters, sizes positions, and switches when better
+# opportunities appear. The [grid] section is ignored in this mode.
+# ─────────────────────────────────────────────────────────────────────────────
+[autopilot]
+enabled             = false     # true = fully autonomous mode
+scan_interval_secs  = 1800      # re-scan every 30 minutes
+switch_threshold    = 15.0      # score improvement needed to switch symbols
+max_grids           = 1         # number of simultaneous grids (symbols)
+
+[autopilot.scanner]
+min_turnover        = 1000000.0   # minimum 24h turnover in USDT
+max_spread_pct      = 0.2         # maximum bid-ask spread %
+quote_currencies    = ["USDT"]    # which quote currencies to scan
+max_results         = 10          # top N candidates to analyze
+kline_interval      = "60"        # candlestick interval (minutes)
+kline_count         = 200         # candles to fetch for regime analysis

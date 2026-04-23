@@ -1,0 +1,8 @@
+/target
+config.toml
+.env
+*.db
+*.sqlite
+*.key
+*.pem
+*.secret
