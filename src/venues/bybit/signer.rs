@@ -7,7 +7,7 @@
 //! String to sign: `timestamp_ms || api_key || recv_window || payload`
 //! Output: lowercase hex of HMAC-SHA256(api_secret, string_to_sign).
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;

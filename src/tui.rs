@@ -133,7 +133,7 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
                     Constraint::Min(8),    // grid + fills
                     Constraint::Length(3), // footer
                 ])
-                .split(f.size());
+                .split(f.area());
 
             // Header
             let mode = if s.dry_run { " [DRY-RUN]" } else { "" };
