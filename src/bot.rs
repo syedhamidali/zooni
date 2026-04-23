@@ -23,6 +23,7 @@ use crate::telegram::TelegramBot;
 use crate::tui::{GridLevelDisplay, TuiState};
 use crate::types::Side;
 use crate::venues::bybit;
+use crate::ws_private::{self, WsEvent};
 
 /// Shared context passed to helper functions instead of many individual args.
 struct BotCtx<'a> {
@@ -211,6 +212,19 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         base = client.base_url(),
         "Bybit REST client ready"
     );
+
+    // -- 6b. Private WebSocket for instant fill detection ----------------------
+    let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    if !dry_run {
+        let ws_api_key = cfg.bybit.api_key.clone();
+        let ws_api_secret = cfg.bybit.api_secret.clone();
+        let ws_testnet = cfg.bybit.testnet;
+        let ws_tx_clone = ws_tx.clone();
+        tokio::spawn(async move {
+            ws_private::start(ws_api_key, ws_api_secret, ws_testnet, ws_tx_clone).await;
+        });
+        info!("private WebSocket listener spawned");
+    }
 
     // -- 7. Clock sync check ---------------------------------------------------
     if !dry_run {
@@ -462,293 +476,424 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
     let mut regime_paused = false; // true if grid is paused due to unfavorable regime
 
     loop {
-        tick.tick().await;
-        if kill.load(Ordering::SeqCst) {
-            info!("kill switch tripped; exiting main loop");
-            break;
-        }
+        tokio::select! {
+            _ = tick.tick() => {
+                if kill.load(Ordering::SeqCst) {
+                    info!("kill switch tripped; exiting main loop");
+                    break;
+                }
 
-        // Circuit breaker check
-        if breaker.is_open() {
-            warn!("circuit breaker open — skipping reconciliation tick");
-            continue;
-        }
+                // Circuit breaker check
+                if breaker.is_open() {
+                    warn!("circuit breaker open — skipping reconciliation tick");
+                    continue;
+                }
 
-        // Periodic regime detection — auto-pause during unfavorable conditions
-        if !dry_run {
-            regime_check_counter += 1;
-            if regime_check_counter >= regime_check_interval {
-                regime_check_counter = 0;
-                match client.klines(&cfg.grid.symbol, "60", 100).await {
-                    Ok(klines) => {
-                        if let Some(analysis) = crate::regime::analyze(&klines) {
-                            info!(
-                                regime = %analysis.regime,
-                                adx = format!("{:.1}", analysis.adx),
-                                rsi = format!("{:.1}", analysis.rsi),
-                                vol = format!("{:.2}%", analysis.volatility_pct),
-                                grid_ok = analysis.grid_suitable,
-                                "regime check",
-                            );
-                            // Update dashboard with regime info
-                            {
-                                let mut series = metrics.series.lock().await;
-                                series.regime = analysis.regime.to_string();
-                                series.regime_confidence = analysis.confidence;
-                                series.grid_suitable = analysis.grid_suitable;
+                // Periodic regime detection — auto-pause during unfavorable conditions
+                if !dry_run {
+                    regime_check_counter += 1;
+                    if regime_check_counter >= regime_check_interval {
+                        regime_check_counter = 0;
+                        match client.klines(&cfg.grid.symbol, "60", 100).await {
+                            Ok(klines) => {
+                                if let Some(analysis) = crate::regime::analyze(&klines) {
+                                    info!(
+                                        regime = %analysis.regime,
+                                        adx = format!("{:.1}", analysis.adx),
+                                        rsi = format!("{:.1}", analysis.rsi),
+                                        vol = format!("{:.2}%", analysis.volatility_pct),
+                                        grid_ok = analysis.grid_suitable,
+                                        "regime check",
+                                    );
+                                    // Update dashboard with regime info
+                                    {
+                                        let mut series = metrics.series.lock().await;
+                                        series.regime = analysis.regime.to_string();
+                                        series.regime_confidence = analysis.confidence;
+                                        series.grid_suitable = analysis.grid_suitable;
+                                    }
+                                    if !analysis.grid_suitable && !regime_paused {
+                                        regime_paused = true;
+                                        warn!(regime = %analysis.regime, "unfavorable regime — pausing new orders");
+                                        alerter
+                                            .lifecycle(&format!(
+                                                "⚠️ Regime: {} (ADX={:.1}, RSI={:.1}) — pausing new placements",
+                                                analysis.regime, analysis.adx, analysis.rsi,
+                                            ))
+                                            .await;
+                                    } else if analysis.grid_suitable && regime_paused {
+                                        regime_paused = false;
+                                        info!(regime = %analysis.regime, "favorable regime resumed — resuming orders");
+                                        alerter
+                                            .lifecycle(&format!(
+                                                "✅ Regime: {} — resuming grid trading",
+                                                analysis.regime,
+                                            ))
+                                            .await;
+                                    }
+                                }
                             }
-                            if !analysis.grid_suitable && !regime_paused {
-                                regime_paused = true;
-                                warn!(regime = %analysis.regime, "unfavorable regime — pausing new orders");
-                                alerter
-                                    .lifecycle(&format!(
-                                        "⚠️ Regime: {} (ADX={:.1}, RSI={:.1}) — pausing new placements",
-                                        analysis.regime, analysis.adx, analysis.rsi,
-                                    ))
-                                    .await;
-                            } else if analysis.grid_suitable && regime_paused {
-                                regime_paused = false;
-                                info!(regime = %analysis.regime, "favorable regime resumed — resuming orders");
-                                alerter
-                                    .lifecycle(&format!(
-                                        "✅ Regime: {} — resuming grid trading",
-                                        analysis.regime,
-                                    ))
-                                    .await;
+                            Err(e) => {
+                                warn!(err = %e, "regime check klines fetch failed");
                             }
                         }
                     }
+                }
+
+                match reconcile_once(&ctx, &mut grid, regime_paused).await {
+                    Ok(_) => breaker.record_success(),
                     Err(e) => {
-                        warn!(err = %e, "regime check klines fetch failed");
+                        breaker.record_failure();
+                        warn!(err = %e, failures = breaker.failure_count(), "reconcile iteration failed");
+                        alerter.error(&format!("reconcile failed: {e}")).await;
                     }
                 }
-            }
-        }
 
-        match reconcile_once(&ctx, &mut grid, regime_paused).await {
-            Ok(_) => breaker.record_success(),
-            Err(e) => {
-                breaker.record_failure();
-                warn!(err = %e, failures = breaker.failure_count(), "reconcile iteration failed");
-                alerter.error(&format!("reconcile failed: {e}")).await;
-            }
-        }
-
-        // Update metrics + dashboard series with current state
-        metrics.set_open_orders(grid.orders.len() as u64);
-        {
-            if let Ok(pnl) = db.lock().await.total_realised_pnl(&cfg.grid.symbol) {
-                metrics.set_pnl(pnl);
-                metrics.series.lock().await.push_pnl(pnl);
-            }
-        }
-        // Update dashboard grid levels
-        {
-            let mut series = metrics.series.lock().await;
-            series.symbol = cfg.grid.symbol.clone();
-            series.grid_levels = grid
-                .levels
-                .iter()
-                .enumerate()
-                .map(|(i, &price)| {
-                    let (side, status) = if let Some(order) = grid.orders.get(&i) {
-                        let s = match order.side {
-                            Side::Buy => "BUY",
-                            Side::Sell => "SELL",
-                        };
-                        (s.to_string(), "OPEN".to_string())
-                    } else {
-                        (String::new(), String::new())
-                    };
-                    crate::metrics::GridLevel {
-                        index: i,
-                        price,
-                        side,
-                        status,
+                // Update metrics + dashboard series with current state
+                metrics.set_open_orders(grid.orders.len() as u64);
+                {
+                    let db_guard = db.lock().await;
+                    if let Ok(pnl) = db_guard.total_realised_pnl(&cfg.grid.symbol) {
+                        metrics.set_pnl(pnl);
+                        metrics.series.lock().await.push_pnl(pnl);
                     }
-                })
-                .collect();
-        }
+                }
+                // Update dashboard grid levels
+                {
+                    let mut series = metrics.series.lock().await;
+                    series.symbol = cfg.grid.symbol.clone();
+                    series.grid_levels = grid
+                        .levels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &price)| {
+                            let (side, status) = if let Some(order) = grid.orders.get(&i) {
+                                let s = match order.side {
+                                    Side::Buy => "BUY",
+                                    Side::Sell => "SELL",
+                                };
+                                (s.to_string(), "OPEN".to_string())
+                            } else {
+                                (String::new(), String::new())
+                            };
+                            crate::metrics::GridLevel {
+                                index: i,
+                                price,
+                                side,
+                                status,
+                            }
+                        })
+                        .collect();
+                }
 
-        // Periodic equity + PnL refresh
-        if !dry_run {
-            if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
-                for a in &accounts {
-                    for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD")
-                            && !c.wallet_balance.is_empty()
-                            && let Ok(bal) = c.wallet_balance.parse::<f64>()
-                        {
-                            let mut guard = engine.lock().await;
-                            guard.set_equity(bal);
-                            metrics.set_equity(bal);
-                            metrics.series.lock().await.push_equity(bal);
+                // Periodic equity + PnL refresh
+                if !dry_run {
+                    if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
+                        for a in &accounts {
+                            for c in &a.coin {
+                                if (c.coin == "USDT" || c.coin == "USD")
+                                    && !c.wallet_balance.is_empty()
+                                    && let Ok(bal) = c.wallet_balance.parse::<f64>()
+                                {
+                                    let mut guard = engine.lock().await;
+                                    guard.set_equity(bal);
+                                    metrics.set_equity(bal);
+                                    metrics.series.lock().await.push_equity(bal);
+                                }
+                            }
+                        }
+                    }
+
+                    // Refresh daily/weekly PnL — batch db locks
+                    let today = Utc::now().format("%Y-%m-%d").to_string();
+                    let now = Utc::now();
+                    let weekday = now.weekday().num_days_from_monday();
+                    let week_start = (now - chrono::Duration::days(weekday as i64))
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    let week_end = (now + chrono::Duration::days(1))
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    {
+                        let db_guard = db.lock().await;
+                        if let Ok(daily) = db_guard.daily_pnl(&today) {
+                            if let Ok(weekly) = db_guard.weekly_pnl(&week_start, &week_end) {
+                                let mut guard = engine.lock().await;
+                                guard.set_daily_pnl(daily);
+                                guard.set_weekly_pnl(weekly);
+                            }
+                        }
+                    }
+                }
+
+                // Periodic P&L summary alert — batch db locks
+                if pnl_report_interval > 0 {
+                    pnl_report_counter += 1;
+                    if pnl_report_counter >= pnl_report_interval {
+                        pnl_report_counter = 0;
+                        let today = Utc::now().format("%Y-%m-%d").to_string();
+                        let (daily, total, fills) = {
+                            let db_guard = db.lock().await;
+                            let d = db_guard.daily_pnl(&today).unwrap_or(0.0);
+                            let t = db_guard.total_realised_pnl(&cfg.grid.symbol).unwrap_or(0.0);
+                            let f = db_guard.total_fill_count(&cfg.grid.symbol).unwrap_or(0);
+                            (d, t, f)
+                        };
+                        let equity = engine.lock().await.equity();
+                        alerter
+                            .pnl_summary(&cfg.grid.symbol, daily, total, fills, equity)
+                            .await;
+                    }
+                }
+
+                // Update TUI state for dashboard consumers — batch locks
+                {
+                    let equity_val = engine.lock().await.equity();
+                    let today_str = Utc::now().format("%Y-%m-%d").to_string();
+                    let (total_pnl_val, daily_pnl_val) = {
+                        let db_guard = db.lock().await;
+                        let tp = db_guard.total_realised_pnl(&cfg.grid.symbol).unwrap_or(0.0);
+                        let dp = db_guard.daily_pnl(&today_str).unwrap_or(0.0);
+                        (tp, dp)
+                    };
+
+                    let mut ts = tui_state.lock().await;
+                    ts.open_orders = grid.orders.len() as u64;
+                    ts.total_fills = metrics.fills_total.load(Ordering::Relaxed);
+                    ts.equity = equity_val;
+                    ts.total_pnl = total_pnl_val;
+                    ts.daily_pnl = daily_pnl_val;
+                    ts.circuit_breaker_open = breaker.is_open();
+
+                    // Update grid level display
+                    ts.grid_state = grid
+                        .levels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &price)| {
+                            let (side, status) = if let Some(order) = grid.orders.get(&i) {
+                                let s = match order.side {
+                                    Side::Buy => "BUY",
+                                    Side::Sell => "SELL",
+                                };
+                                (s.to_string(), "OPEN".to_string())
+                            } else {
+                                ("---".to_string(), "---".to_string())
+                            };
+                            GridLevelDisplay {
+                                level: i,
+                                price,
+                                side,
+                                status,
+                                is_current: false,
+                            }
+                        })
+                        .collect();
+
+                    // Mark level closest to current price
+                    if ts.current_price > 0.0 {
+                        let mut closest = 0;
+                        let mut min_dist = f64::MAX;
+                        for (i, g) in ts.grid_state.iter().enumerate() {
+                            let dist = (g.price - ts.current_price).abs();
+                            if dist < min_dist {
+                                min_dist = dist;
+                                closest = i;
+                            }
+                        }
+                        if let Some(g) = ts.grid_state.get_mut(closest) {
+                            g.is_current = true;
+                        }
+                    }
+                }
+
+                // Fetch current price for TUI + dashboard + rebalancing
+                if !dry_run
+                    && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
+                    && let Ok(price) = ticker.last_price.parse::<f64>()
+                {
+                    let mut series = metrics.series.lock().await;
+                    series.push_price(price);
+                    drop(series);
+                    tui_state.lock().await.current_price = price;
+                }
+
+                // Dynamic grid rebalancing
+                if cfg.grid.auto_rebalance
+                    && !dry_run
+                    && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
+                    && let Ok(price) = ticker.last_price.parse::<f64>()
+                {
+                    let lower = *grid.levels.first().unwrap_or(&0.0);
+                    let upper = *grid.levels.last().unwrap_or(&0.0);
+                    let range = upper - lower;
+                    // If price is within 10% of either edge, rebalance
+                    if price < lower + range * 0.10 || price > upper - range * 0.10 {
+                        info!(
+                            price,
+                            lower, upper, "price near grid edge — rebalancing grid",
+                        );
+                        // Cancel all and re-place around new mid
+                        if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
+                            warn!(err = %e, "cancel_all for rebalance failed");
+                        } else {
+                            // Mark all orders cancelled in DB
+                            {
+                                let db_guard = db.lock().await;
+                                for (_, order) in grid.orders.drain() {
+                                    let _ = db_guard.mark_cancelled(&order.order_id);
+                                }
+                            }
+                            // Rebuild grid centered on current price
+                            let new_lower = price - range / 2.0;
+                            let new_upper = price + range / 2.0;
+                            let new_levels = crate::grid::compute_levels(
+                                new_lower.max(0.01),
+                                new_upper,
+                                grid.levels.len(),
+                            );
+                            grid.levels = new_levels;
+                            let plan = grid.plan_initial(price);
+                            info!(
+                                new_lower = new_lower.max(0.01),
+                                new_upper,
+                                plan_size = plan.len(),
+                                "rebalanced grid",
+                            );
+                            for p in &plan {
+                                if kill.load(Ordering::SeqCst) {
+                                    break;
+                                }
+                                place_with_risk(&ctx, &mut grid, p).await;
+                            }
+                            alerter
+                                .lifecycle(&format!(
+                                    "Grid rebalanced around {price:.2}: {:.2}–{:.2}",
+                                    new_lower.max(0.01),
+                                    new_upper
+                                ))
+                                .await;
                         }
                     }
                 }
             }
 
-            // Refresh daily/weekly PnL
-            let today = Utc::now().format("%Y-%m-%d").to_string();
-            if let Ok(daily) = db.lock().await.daily_pnl(&today) {
-                let now = Utc::now();
-                let weekday = now.weekday().num_days_from_monday();
-                let week_start = (now - chrono::Duration::days(weekday as i64))
-                    .format("%Y-%m-%d")
-                    .to_string();
-                let week_end = (now + chrono::Duration::days(1))
-                    .format("%Y-%m-%d")
-                    .to_string();
-                if let Ok(weekly) = db.lock().await.weekly_pnl(&week_start, &week_end) {
-                    let mut guard = engine.lock().await;
-                    guard.set_daily_pnl(daily);
-                    guard.set_weekly_pnl(weekly);
-                }
-            }
-        }
-
-        // Periodic P&L summary alert
-        if pnl_report_interval > 0 {
-            pnl_report_counter += 1;
-            if pnl_report_counter >= pnl_report_interval {
-                pnl_report_counter = 0;
-                let today = Utc::now().format("%Y-%m-%d").to_string();
-                let daily = db.lock().await.daily_pnl(&today).unwrap_or(0.0);
-                let total = db
-                    .lock()
-                    .await
-                    .total_realised_pnl(&cfg.grid.symbol)
-                    .unwrap_or(0.0);
-                let fills = db
-                    .lock()
-                    .await
-                    .total_fill_count(&cfg.grid.symbol)
-                    .unwrap_or(0);
-                let equity = engine.lock().await.equity();
-                alerter
-                    .pnl_summary(&cfg.grid.symbol, daily, total, fills, equity)
-                    .await;
-            }
-        }
-
-        // Update TUI state for dashboard consumers
-        {
-            let mut ts = tui_state.lock().await;
-            ts.open_orders = grid.orders.len() as u64;
-            ts.total_fills = metrics.fills_total.load(Ordering::Relaxed);
-            ts.equity = engine.lock().await.equity();
-            ts.total_pnl = db
-                .lock()
-                .await
-                .total_realised_pnl(&cfg.grid.symbol)
-                .unwrap_or(0.0);
-            let today_str = Utc::now().format("%Y-%m-%d").to_string();
-            ts.daily_pnl = db.lock().await.daily_pnl(&today_str).unwrap_or(0.0);
-            ts.circuit_breaker_open = breaker.is_open();
-
-            // Update grid level display
-            ts.grid_state = grid
-                .levels
-                .iter()
-                .enumerate()
-                .map(|(i, &price)| {
-                    let (side, status) = if let Some(order) = grid.orders.get(&i) {
-                        let s = match order.side {
-                            Side::Buy => "BUY",
-                            Side::Sell => "SELL",
-                        };
-                        (s.to_string(), "OPEN".to_string())
-                    } else {
-                        ("---".to_string(), "---".to_string())
-                    };
-                    GridLevelDisplay {
-                        level: i,
-                        price,
+            event = ws_rx.recv() => {
+                let Some(event) = event else { continue };
+                match event {
+                    WsEvent::OrderFilled {
+                        order_id,
+                        symbol: _ws_symbol,
                         side,
+                        price: fill_price,
+                        qty: fill_qty,
                         status,
-                        is_current: false,
-                    }
-                })
-                .collect();
+                        ..
+                    } => {
+                        // Find which grid level this order belongs to
+                        let level_entry = grid.orders.iter().find(|(_, o)| o.order_id == order_id);
+                        if let Some((&level, _)) = level_entry {
+                            let notional = fill_price * fill_qty;
+                            let grid_spacing = if grid.levels.len() >= 2 {
+                                grid.levels[1] - grid.levels[0]
+                            } else {
+                                0.0
+                            };
+                            let realised_pnl = match side {
+                                Side::Sell => grid_spacing * fill_qty,
+                                Side::Buy => 0.0,
+                            };
 
-            // Mark level closest to current price
-            if ts.current_price > 0.0 {
-                let mut closest = 0;
-                let mut min_dist = f64::MAX;
-                for (i, g) in ts.grid_state.iter().enumerate() {
-                    let dist = (g.price - ts.current_price).abs();
-                    if dist < min_dist {
-                        min_dist = dist;
-                        closest = i;
-                    }
-                }
-                if let Some(g) = ts.grid_state.get_mut(closest) {
-                    g.is_current = true;
-                }
-            }
-        }
+                            // Only process fully filled orders for grid replacement
+                            if status == "Filled" {
+                                grid.orders.remove(&level);
+                            }
 
-        // Fetch current price for TUI + dashboard + rebalancing
-        if !dry_run
-            && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
-            && let Ok(price) = ticker.last_price.parse::<f64>()
-        {
-            tui_state.lock().await.current_price = price;
-            metrics.series.lock().await.push_price(price);
-        }
+                            info!(level, ?side, notional, pnl = realised_pnl, "[WS] fill processed");
 
-        // Dynamic grid rebalancing
-        if cfg.grid.auto_rebalance
-            && !dry_run
-            && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
-            && let Ok(price) = ticker.last_price.parse::<f64>()
-        {
-            let lower = *grid.levels.first().unwrap_or(&0.0);
-            let upper = *grid.levels.last().unwrap_or(&0.0);
-            let range = upper - lower;
-            // If price is within 10% of either edge, rebalance
-            if price < lower + range * 0.10 || price > upper - range * 0.10 {
-                info!(
-                    price,
-                    lower, upper, "price near grid edge — rebalancing grid",
-                );
-                // Cancel all and re-place around new mid
-                if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
-                    warn!(err = %e, "cancel_all for rebalance failed");
-                } else {
-                    // Mark all orders cancelled in DB
-                    for (_, order) in grid.orders.drain() {
-                        let _ = db.lock().await.mark_cancelled(&order.order_id);
-                    }
-                    // Rebuild grid centered on current price
-                    let new_lower = price - range / 2.0;
-                    let new_upper = price + range / 2.0;
-                    let new_levels = crate::grid::compute_levels(
-                        new_lower.max(0.01),
-                        new_upper,
-                        grid.levels.len(),
-                    );
-                    grid.levels = new_levels;
-                    let plan = grid.plan_initial(price);
-                    info!(
-                        new_lower = new_lower.max(0.01),
-                        new_upper,
-                        plan_size = plan.len(),
-                        "rebalanced grid",
-                    );
-                    for p in &plan {
-                        if kill.load(Ordering::SeqCst) {
-                            break;
+                            // Record fill in DB
+                            {
+                                let db_guard = db.lock().await;
+                                let _ = db_guard.mark_filled(&order_id, fill_price, fill_qty);
+                                let _ = db_guard.insert_fill(&FillRow {
+                                    order_id: order_id.clone(),
+                                    symbol: cfg.grid.symbol.clone(),
+                                    side,
+                                    price: fill_price,
+                                    qty: fill_qty,
+                                    notional,
+                                    realised_pnl,
+                                    filled_at: Utc::now(),
+                                });
+                            }
+
+                            // Record metrics
+                            ctx.metrics.record_fill(matches!(side, Side::Buy));
+                            {
+                                let side_str = match side {
+                                    Side::Buy => "BUY",
+                                    Side::Sell => "SELL",
+                                };
+                                ctx.metrics
+                                    .series
+                                    .lock()
+                                    .await
+                                    .add_fill(crate::metrics::FillEntry {
+                                        timestamp: chrono::Utc::now().timestamp_millis(),
+                                        side: side_str.to_string(),
+                                        price: fill_price,
+                                        qty: fill_qty,
+                                        pnl: realised_pnl,
+                                        order_id: order_id.clone(),
+                                    });
+                            }
+
+                            // Alert
+                            let side_str = match side {
+                                Side::Buy => "BUY",
+                                Side::Sell => "SELL",
+                            };
+                            alerter
+                                .fill(&cfg.grid.symbol, side_str, fill_price, fill_qty, realised_pnl)
+                                .await;
+
+                            // Update risk engine
+                            {
+                                let mut guard = engine.lock().await;
+                                guard.on_fill(Market::Crypto, &cfg.grid.symbol, "grid", -notional);
+                            }
+
+                            // Place replacement if fully filled
+                            if status == "Filled" {
+                                if regime_paused {
+                                    info!(level, ?side, "regime paused — skipping replacement order");
+                                } else if let Some(plan) = grid.plan_replacement(level, side) {
+                                    place_with_risk(&ctx, &mut grid, &plan).await;
+                                }
+                            }
+
+                            metrics.set_open_orders(grid.orders.len() as u64);
+                        } else {
+                            info!(order_id = %order_id, "[WS] fill for unknown order (may be from another session)");
                         }
-                        place_with_risk(&ctx, &mut grid, p).await;
                     }
-                    alerter
-                        .lifecycle(&format!(
-                            "Grid rebalanced around {price:.2}: {:.2}–{:.2}",
-                            new_lower.max(0.01),
-                            new_upper
-                        ))
-                        .await;
+                    WsEvent::OrderCancelled { order_id, .. } => {
+                        // Remove from grid if we're tracking it
+                        let removed = grid.orders.iter()
+                            .find(|(_, o)| o.order_id == order_id)
+                            .map(|(&level, _)| level);
+                        if let Some(level) = removed {
+                            grid.orders.remove(&level);
+                            info!(level, order_id = %order_id, "[WS] order cancelled, removed from grid");
+                            metrics.set_open_orders(grid.orders.len() as u64);
+                        }
+                    }
+                    WsEvent::Connected => {
+                        info!("[WS] private WebSocket connected");
+                    }
+                    WsEvent::Disconnected => {
+                        warn!("[WS] private WebSocket disconnected (will auto-reconnect)");
+                    }
                 }
             }
         }

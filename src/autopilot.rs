@@ -25,6 +25,7 @@ use crate::scanner::{self, ScanResult};
 use crate::sizing;
 use crate::types::Side;
 use crate::venues::bybit;
+use crate::ws_private::{self, WsEvent};
 
 /// Shared context for autopilot helper functions.
 struct ApCtx<'a> {
@@ -129,6 +130,19 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
         })
     };
     info!(testnet = cfg.bybit.testnet, "Bybit client ready");
+
+    // -- Private WebSocket for instant fill detection --
+    let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    if !dry_run {
+        let ws_api_key = cfg.bybit.api_key.clone();
+        let ws_api_secret = cfg.bybit.api_secret.clone();
+        let ws_testnet = cfg.bybit.testnet;
+        let ws_tx_clone = ws_tx.clone();
+        tokio::spawn(async move {
+            ws_private::start(ws_api_key, ws_api_secret, ws_testnet, ws_tx_clone).await;
+        });
+        info!("private WebSocket listener spawned for autopilot");
+    }
 
     // -- Wallet balance --
     let mut equity = cfg.risk.starting_equity_quote;
@@ -255,87 +269,234 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
     let mut scan_counter: u64 = 0;
 
     loop {
-        trade_tick.tick().await;
+        tokio::select! {
+            _ = trade_tick.tick() => {
+                if kill.load(Ordering::SeqCst) {
+                    info!("kill switch tripped; exiting auto-pilot loop");
+                    break;
+                }
 
-        if kill.load(Ordering::SeqCst) {
-            info!("kill switch tripped; exiting auto-pilot loop");
-            break;
-        }
-
-        if breaker.is_open() {
-            warn!("circuit breaker open — skipping tick");
-            continue;
-        }
-
-        // -- Reconcile all active grids --
-        let symbols: Vec<String> = active_grids.keys().cloned().collect();
-        for symbol in &symbols {
-            if let Some(ag) = active_grids.get_mut(symbol) {
-                if dry_run {
+                if breaker.is_open() {
+                    warn!("circuit breaker open — skipping tick");
                     continue;
                 }
-                match reconcile_grid(&client, ag, &engine, &db, &alerter, &retry_policy, &breaker)
-                    .await
-                {
-                    Ok(_) => breaker.record_success(),
-                    Err(e) => {
-                        breaker.record_failure();
-                        warn!(symbol = %symbol, err = %e, "reconcile failed");
-                    }
-                }
-            }
-        }
 
-        // -- Periodic re-scan --
-        scan_counter += 1;
-        if scan_counter >= scan_interval_ticks && !dry_run {
-            scan_counter = 0;
-
-            info!("Auto-pilot: running periodic market scan...");
-
-            // Refresh equity
-            if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
-                for a in &accounts {
-                    for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD")
-                            && !c.wallet_balance.is_empty()
-                            && let Ok(bal) = c.wallet_balance.parse::<f64>()
+                // -- Reconcile all active grids --
+                let symbols: Vec<String> = active_grids.keys().cloned().collect();
+                for symbol in &symbols {
+                    if let Some(ag) = active_grids.get_mut(symbol) {
+                        if dry_run {
+                            continue;
+                        }
+                        match reconcile_grid(&client, ag, &engine, &db, &alerter, &retry_policy, &breaker)
+                            .await
                         {
-                            equity = bal;
-                            engine.lock().await.set_equity(bal);
+                            Ok(_) => breaker.record_success(),
+                            Err(e) => {
+                                breaker.record_failure();
+                                warn!(symbol = %symbol, err = %e, "reconcile failed");
+                            }
                         }
                     }
                 }
+
+                // -- Periodic re-scan --
+                scan_counter += 1;
+                if scan_counter >= scan_interval_ticks && !dry_run {
+                    scan_counter = 0;
+
+                    info!("Auto-pilot: running periodic market scan...");
+
+                    // Refresh equity
+                    if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
+                        for a in &accounts {
+                            for c in &a.coin {
+                                if (c.coin == "USDT" || c.coin == "USD")
+                                    && !c.wallet_balance.is_empty()
+                                    && let Ok(bal) = c.wallet_balance.parse::<f64>()
+                                {
+                                    equity = bal;
+                                    engine.lock().await.set_equity(bal);
+                                }
+                            }
+                        }
+                    }
+
+                    match scanner::scan(&client, &ap_cfg.scanner).await {
+                        Ok(results) => {
+                            evaluate_and_switch(&ctx, &mut active_grids, &results, equity).await;
+                        }
+                        Err(e) => {
+                            warn!(err = %e, "periodic scan failed");
+                        }
+                    }
+
+                    // Report status
+                    let status_lines: Vec<String> = active_grids
+                        .values()
+                        .map(|ag| {
+                            format!(
+                                "{}: {} orders, PnL {:+.2}",
+                                ag.symbol,
+                                ag.grid.orders.len(),
+                                ag.total_pnl,
+                            )
+                        })
+                        .collect();
+                    alerter
+                        .lifecycle(&format!(
+                            "📊 Auto-pilot status (equity: {:.2}):\n{}",
+                            equity,
+                            status_lines.join("\n"),
+                        ))
+                        .await;
+                }
             }
 
-            match scanner::scan(&client, &ap_cfg.scanner).await {
-                Ok(results) => {
-                    evaluate_and_switch(&ctx, &mut active_grids, &results, equity).await;
-                }
-                Err(e) => {
-                    warn!(err = %e, "periodic scan failed");
+            event = ws_rx.recv() => {
+                let Some(event) = event else { continue };
+                match event {
+                    WsEvent::OrderFilled {
+                        order_id,
+                        symbol: ws_symbol,
+                        side,
+                        price: fill_price,
+                        qty: fill_qty,
+                        status,
+                        ..
+                    } => {
+                        // Find which active grid this order belongs to
+                        if let Some(ag) = active_grids.get_mut(&ws_symbol) {
+                            let level_entry = ag.grid.orders.iter().find(|(_, o)| o.order_id == order_id);
+                            if let Some((&level, _)) = level_entry {
+                                let notional = fill_price * fill_qty;
+                                let grid_spacing = if ag.grid.levels.len() >= 2 {
+                                    ag.grid.levels[1] - ag.grid.levels[0]
+                                } else {
+                                    0.0
+                                };
+                                let pnl = match side {
+                                    Side::Sell => grid_spacing * fill_qty,
+                                    Side::Buy => 0.0,
+                                };
+                                ag.total_pnl += pnl;
+
+                                if status == "Filled" {
+                                    ag.grid.orders.remove(&level);
+                                }
+
+                                info!(symbol = %ws_symbol, level, ?side, pnl, "[WS] fill processed");
+
+                                // Record fill in DB — single lock
+                                {
+                                    let db_guard = db.lock().await;
+                                    let _ = db_guard.mark_filled(&order_id, fill_price, fill_qty);
+                                    let _ = db_guard.insert_fill(&FillRow {
+                                        order_id: order_id.clone(),
+                                        symbol: ws_symbol.clone(),
+                                        side,
+                                        price: fill_price,
+                                        qty: fill_qty,
+                                        notional,
+                                        realised_pnl: pnl,
+                                        filled_at: Utc::now(),
+                                    });
+                                }
+
+                                let side_str = match side {
+                                    Side::Buy => "BUY",
+                                    Side::Sell => "SELL",
+                                };
+                                alerter
+                                    .fill(&ws_symbol, side_str, fill_price, fill_qty, pnl)
+                                    .await;
+                                engine
+                                    .lock()
+                                    .await
+                                    .on_fill(Market::Crypto, &ws_symbol, "grid", -notional);
+
+                                // Place replacement if fully filled
+                                if status == "Filled" {
+                                    if let Some(plan) = ag.grid.plan_replacement(level, side) {
+                                        let price: f64 = plan.price_str.parse().unwrap_or(0.0);
+                                        let qty: f64 = plan.qty_str.parse().unwrap_or(0.0);
+                                        if price > 0.0 && qty > 0.0 {
+                                            let notional = price * qty;
+                                            let risk_ok = {
+                                                let guard = engine.lock().await;
+                                                guard.pretrade_check(Market::Crypto, &ws_symbol, "grid", notional).is_ok()
+                                            };
+                                            if risk_ok {
+                                                let link_id = format!(
+                                                    "ap-{}-{}-{}",
+                                                    ws_symbol, plan.level_index, uuid::Uuid::new_v4().as_simple()
+                                                );
+                                                let qty_str = plan.qty_str.clone();
+                                                let price_str = plan.price_str.clone();
+                                                let link_clone = link_id.clone();
+                                                match with_retry(&retry_policy, "place_replacement", || {
+                                                    client.place_spot_order(
+                                                        &ws_symbol, plan.side, "Limit",
+                                                        &qty_str, Some(&price_str), Some(&link_clone),
+                                                    )
+                                                }).await {
+                                                    Ok(resp) => {
+                                                        ag.grid.orders.insert(
+                                                            plan.level_index,
+                                                            LevelOrder {
+                                                                order_id: resp.order_id.clone(),
+                                                                side: plan.side,
+                                                                price_str: plan.price_str.clone(),
+                                                                qty_str: plan.qty_str.clone(),
+                                                            },
+                                                        );
+                                                        let _ = db.lock().await.insert_order(&OrderRow {
+                                                            order_id: resp.order_id,
+                                                            order_link_id: link_id,
+                                                            symbol: ws_symbol.clone(),
+                                                            side: plan.side,
+                                                            price, qty,
+                                                            level_index: plan.level_index,
+                                                            status: OrderStatus::Open,
+                                                            placed_at: Utc::now(),
+                                                            filled_at: None,
+                                                            filled_qty: 0.0,
+                                                            filled_price: 0.0,
+                                                        });
+                                                        engine.lock().await.on_fill(
+                                                            Market::Crypto, &ws_symbol, "grid", notional,
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(symbol = %ws_symbol, level = plan.level_index, err = %e, "WS replacement failed");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    WsEvent::OrderCancelled { order_id, symbol: ws_symbol } => {
+                        if let Some(ag) = active_grids.get_mut(&ws_symbol) {
+                            let removed = ag.grid.orders.iter()
+                                .find(|(_, o)| o.order_id == order_id)
+                                .map(|(&level, _)| level);
+                            if let Some(level) = removed {
+                                ag.grid.orders.remove(&level);
+                                info!(symbol = %ws_symbol, level, order_id = %order_id, "[WS] order cancelled");
+                            }
+                        }
+                    }
+                    WsEvent::Connected => {
+                        info!("[WS] private WebSocket connected (autopilot)");
+                    }
+                    WsEvent::Disconnected => {
+                        warn!("[WS] private WebSocket disconnected (autopilot, will auto-reconnect)");
+                    }
                 }
             }
-
-            // Report status
-            let status_lines: Vec<String> = active_grids
-                .values()
-                .map(|ag| {
-                    format!(
-                        "{}: {} orders, PnL {:+.2}",
-                        ag.symbol,
-                        ag.grid.orders.len(),
-                        ag.total_pnl,
-                    )
-                })
-                .collect();
-            alerter
-                .lifecycle(&format!(
-                    "📊 Auto-pilot status (equity: {:.2}):\n{}",
-                    equity,
-                    status_lines.join("\n"),
-                ))
-                .await;
         }
     }
 

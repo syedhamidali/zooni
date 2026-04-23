@@ -12,7 +12,7 @@
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client as Http;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::signer::sign;
 use super::{Config, REST_BASE, REST_BASE_TESTNET};
@@ -225,11 +225,14 @@ impl Client {
         } else {
             REST_BASE
         };
-        Self {
-            http: Http::new(),
-            base,
-            cfg,
-        }
+        let http = Http::builder()
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("http client build");
+        Self { http, base, cfg }
     }
 
     pub fn base_url(&self) -> &str {
