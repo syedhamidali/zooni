@@ -77,6 +77,12 @@ pub struct GridLevel {
     pub status: String, // "OPEN" / ""
 }
 
+impl Default for DashboardSeries {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DashboardSeries {
     pub fn new() -> Self {
         Self {

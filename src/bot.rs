@@ -228,11 +228,12 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                 for a in &accounts {
                     for c in &a.coin {
                         if (c.coin == "USDT" || c.coin == "USD")
-                            && let Ok(bal) = c.wallet_balance.parse::<f64>() {
-                                let mut guard = engine.lock().await;
-                                guard.set_equity(bal);
-                                info!(equity = bal, "equity updated from wallet");
-                            }
+                            && let Ok(bal) = c.wallet_balance.parse::<f64>()
+                        {
+                            let mut guard = engine.lock().await;
+                            guard.set_equity(bal);
+                            info!(equity = bal, "equity updated from wallet");
+                        }
                     }
                 }
             }
@@ -588,13 +589,15 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
             if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
                 for a in &accounts {
                     for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty()
-                            && let Ok(bal) = c.wallet_balance.parse::<f64>() {
-                                let mut guard = engine.lock().await;
-                                guard.set_equity(bal);
-                                metrics.set_equity(bal);
-                                metrics.series.lock().await.push_equity(bal);
-                            }
+                        if (c.coin == "USDT" || c.coin == "USD")
+                            && !c.wallet_balance.is_empty()
+                            && let Ok(bal) = c.wallet_balance.parse::<f64>()
+                        {
+                            let mut guard = engine.lock().await;
+                            guard.set_equity(bal);
+                            metrics.set_equity(bal);
+                            metrics.series.lock().await.push_equity(bal);
+                        }
                     }
                 }
             }
@@ -702,77 +705,80 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         // Fetch current price for TUI + dashboard + rebalancing
         if !dry_run
             && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
-                && let Ok(price) = ticker.last_price.parse::<f64>() {
-                    tui_state.lock().await.current_price = price;
-                    metrics.series.lock().await.push_price(price);
-                }
+            && let Ok(price) = ticker.last_price.parse::<f64>()
+        {
+            tui_state.lock().await.current_price = price;
+            metrics.series.lock().await.push_price(price);
+        }
 
         // Dynamic grid rebalancing
-        if cfg.grid.auto_rebalance && !dry_run
+        if cfg.grid.auto_rebalance
+            && !dry_run
             && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
-                && let Ok(price) = ticker.last_price.parse::<f64>() {
-                    let lower = *grid.levels.first().unwrap_or(&0.0);
-                    let upper = *grid.levels.last().unwrap_or(&0.0);
-                    let range = upper - lower;
-                    // If price is within 10% of either edge, rebalance
-                    if price < lower + range * 0.10 || price > upper - range * 0.10 {
-                        info!(
-                            price,
-                            lower, upper, "price near grid edge — rebalancing grid",
-                        );
-                        // Cancel all and re-place around new mid
-                        if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
-                            warn!(err = %e, "cancel_all for rebalance failed");
-                        } else {
-                            // Mark all orders cancelled in DB
-                            for (_, order) in grid.orders.drain() {
-                                let _ = db.lock().await.mark_cancelled(&order.order_id);
-                            }
-                            // Rebuild grid centered on current price
-                            let new_lower = price - range / 2.0;
-                            let new_upper = price + range / 2.0;
-                            let new_levels = crate::grid::compute_levels(
-                                new_lower.max(0.01),
-                                new_upper,
-                                grid.levels.len(),
-                            );
-                            grid.levels = new_levels;
-                            let plan = grid.plan_initial(price);
-                            info!(
-                                new_lower = new_lower.max(0.01),
-                                new_upper,
-                                plan_size = plan.len(),
-                                "rebalanced grid",
-                            );
-                            for p in &plan {
-                                if kill.load(Ordering::SeqCst) {
-                                    break;
-                                }
-                                place_with_risk(
-                                    &client,
-                                    &mut grid,
-                                    p,
-                                    &engine,
-                                    &cfg.grid.symbol,
-                                    &db,
-                                    &alerter,
-                                    &retry_policy,
-                                    &breaker,
-                                    dry_run,
-                                    &metrics,
-                                )
-                                .await;
-                            }
-                            alerter
-                                .lifecycle(&format!(
-                                    "Grid rebalanced around {price:.2}: {:.2}–{:.2}",
-                                    new_lower.max(0.01),
-                                    new_upper
-                                ))
-                                .await;
-                        }
+            && let Ok(price) = ticker.last_price.parse::<f64>()
+        {
+            let lower = *grid.levels.first().unwrap_or(&0.0);
+            let upper = *grid.levels.last().unwrap_or(&0.0);
+            let range = upper - lower;
+            // If price is within 10% of either edge, rebalance
+            if price < lower + range * 0.10 || price > upper - range * 0.10 {
+                info!(
+                    price,
+                    lower, upper, "price near grid edge — rebalancing grid",
+                );
+                // Cancel all and re-place around new mid
+                if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
+                    warn!(err = %e, "cancel_all for rebalance failed");
+                } else {
+                    // Mark all orders cancelled in DB
+                    for (_, order) in grid.orders.drain() {
+                        let _ = db.lock().await.mark_cancelled(&order.order_id);
                     }
+                    // Rebuild grid centered on current price
+                    let new_lower = price - range / 2.0;
+                    let new_upper = price + range / 2.0;
+                    let new_levels = crate::grid::compute_levels(
+                        new_lower.max(0.01),
+                        new_upper,
+                        grid.levels.len(),
+                    );
+                    grid.levels = new_levels;
+                    let plan = grid.plan_initial(price);
+                    info!(
+                        new_lower = new_lower.max(0.01),
+                        new_upper,
+                        plan_size = plan.len(),
+                        "rebalanced grid",
+                    );
+                    for p in &plan {
+                        if kill.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        place_with_risk(
+                            &client,
+                            &mut grid,
+                            p,
+                            &engine,
+                            &cfg.grid.symbol,
+                            &db,
+                            &alerter,
+                            &retry_policy,
+                            &breaker,
+                            dry_run,
+                            &metrics,
+                        )
+                        .await;
+                    }
+                    alerter
+                        .lifecycle(&format!(
+                            "Grid rebalanced around {price:.2}: {:.2}–{:.2}",
+                            new_lower.max(0.01),
+                            new_upper
+                        ))
+                        .await;
                 }
+            }
+        }
     }
 
     // -- 16. Graceful shutdown -------------------------------------------------
@@ -1037,9 +1043,10 @@ async fn reconcile_once(
         std::collections::HashMap::new();
     for o in &open {
         if let Ok(cum_qty) = o.cum_exec_qty.parse::<f64>()
-            && cum_qty > 0.0 {
-                partial_fills.insert(o.order_id.clone(), cum_qty);
-            }
+            && cum_qty > 0.0
+        {
+            partial_fills.insert(o.order_id.clone(), cum_qty);
+        }
     }
 
     // Orders we tracked but that are no longer on the exchange — treat as filled.
