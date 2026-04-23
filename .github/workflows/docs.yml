@@ -27,12 +27,9 @@ jobs:
       - name: Build docs
         run: mdbook build docs
 
-      - name: Add auth middleware
-        run: cp -r docs/functions docs/book/functions
-
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy docs/book --project-name=zooni-docs
+          command: pages deploy docs/book --project-name=zooni-docs --functions=docs/functions
