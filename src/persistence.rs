@@ -392,4 +392,126 @@ mod tests {
         let pnl = db.total_realised_pnl("BTCUSDT").unwrap();
         assert!((pnl - 1.0).abs() < 1e-9);
     }
+
+    #[test]
+    fn mark_cancelled_removes_from_open() {
+        let db = Db::open_in_memory().unwrap();
+        let o = OrderRow {
+            order_id: "ord-cancel".into(),
+            order_link_id: "link-c".into(),
+            symbol: "ETHUSDT".into(),
+            side: Side::Sell,
+            price: 3500.0,
+            qty: 0.1,
+            level_index: 5,
+            status: OrderStatus::Open,
+            placed_at: Utc::now(),
+            filled_at: None,
+            filled_qty: 0.0,
+            filled_price: 0.0,
+        };
+        db.insert_order(&o).unwrap();
+        assert_eq!(db.open_orders("ETHUSDT").unwrap().len(), 1);
+
+        db.mark_cancelled("ord-cancel").unwrap();
+        assert_eq!(db.open_orders("ETHUSDT").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn multiple_fills_sum_pnl() {
+        let db = Db::open_in_memory().unwrap();
+        for (i, pnl) in [(1, 2.5), (2, -1.0), (3, 3.0)] {
+            db.insert_fill(&FillRow {
+                order_id: format!("ord-{i}"),
+                symbol: "BTCUSDT".into(),
+                side: Side::Sell,
+                price: 65000.0,
+                qty: 0.001,
+                notional: 65.0,
+                realised_pnl: pnl,
+                filled_at: Utc::now(),
+            })
+            .unwrap();
+        }
+        let total = db.total_realised_pnl("BTCUSDT").unwrap();
+        assert!((total - 4.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fill_count_tracks_fills() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.total_fill_count("BTCUSDT").unwrap(), 0);
+
+        for i in 0..5 {
+            db.insert_fill(&FillRow {
+                order_id: format!("fill-{i}"),
+                symbol: "BTCUSDT".into(),
+                side: Side::Buy,
+                price: 65000.0,
+                qty: 0.001,
+                notional: 65.0,
+                realised_pnl: 0.0,
+                filled_at: Utc::now(),
+            })
+            .unwrap();
+        }
+        assert_eq!(db.total_fill_count("BTCUSDT").unwrap(), 5);
+        assert_eq!(db.total_fill_count("ETHUSDT").unwrap(), 0);
+    }
+
+    #[test]
+    fn bot_state_round_trip() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.get_state("missing").unwrap(), None);
+
+        db.set_state("last_symbol", "BTCUSDT").unwrap();
+        assert_eq!(db.get_state("last_symbol").unwrap(), Some("BTCUSDT".into()));
+
+        db.set_state("last_symbol", "ETHUSDT").unwrap();
+        assert_eq!(db.get_state("last_symbol").unwrap(), Some("ETHUSDT".into()));
+    }
+
+    #[test]
+    fn order_status_from_str_round_trip() {
+        let statuses = [
+            OrderStatus::Open,
+            OrderStatus::Filled,
+            OrderStatus::Cancelled,
+            OrderStatus::PartiallyFilled,
+        ];
+        for s in &statuses {
+            assert_eq!(OrderStatus::from_str(s.as_str()), *s);
+        }
+    }
+
+    #[test]
+    fn order_status_unknown_defaults_to_open() {
+        assert_eq!(OrderStatus::from_str("garbage"), OrderStatus::Open);
+    }
+
+    #[test]
+    fn open_orders_scoped_by_symbol() {
+        let db = Db::open_in_memory().unwrap();
+        let make_order = |id: &str, sym: &str| OrderRow {
+            order_id: id.into(),
+            order_link_id: "".into(),
+            symbol: sym.into(),
+            side: Side::Buy,
+            price: 100.0,
+            qty: 1.0,
+            level_index: 0,
+            status: OrderStatus::Open,
+            placed_at: Utc::now(),
+            filled_at: None,
+            filled_qty: 0.0,
+            filled_price: 0.0,
+        };
+        db.insert_order(&make_order("a", "BTCUSDT")).unwrap();
+        db.insert_order(&make_order("b", "BTCUSDT")).unwrap();
+        db.insert_order(&make_order("c", "ETHUSDT")).unwrap();
+
+        assert_eq!(db.open_orders("BTCUSDT").unwrap().len(), 2);
+        assert_eq!(db.open_orders("ETHUSDT").unwrap().len(), 1);
+        assert_eq!(db.open_orders("SOLUSDT").unwrap().len(), 0);
+    }
 }
