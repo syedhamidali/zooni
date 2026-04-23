@@ -283,15 +283,12 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
         drop(s);
 
         // Handle input
-        if event::poll(tick_rate)? {
-            if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q')
-                    || key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    break;
-                }
-            }
+        if event::poll(tick_rate)?
+            && let Event::Key(key) = event::read()?
+            && (key.code == KeyCode::Char('q')
+                || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+        {
+            break;
         }
     }
 

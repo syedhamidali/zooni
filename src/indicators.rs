@@ -121,9 +121,9 @@ pub fn adx(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Option
         let mut result = Vec::with_capacity(data.len());
         let init: f64 = data[..p].iter().sum();
         result.push(init);
-        for i in p..data.len() {
+        for val in &data[p..] {
             let prev = result[result.len() - 1];
-            result.push(prev - prev / p as f64 + data[i]);
+            result.push(prev - prev / p as f64 + val);
         }
         result
     };
@@ -161,8 +161,8 @@ pub fn adx(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Option
     // ADX = smoothed DX
     let adx_init: f64 = dx_vals[..period].iter().sum::<f64>() / period as f64;
     let mut adx_val = adx_init;
-    for i in period..dx_vals.len() {
-        adx_val = (adx_val * (period as f64 - 1.0) + dx_vals[i]) / period as f64;
+    for val in &dx_vals[period..] {
+        adx_val = (adx_val * (period as f64 - 1.0) + val) / period as f64;
     }
 
     // Final +DI / -DI

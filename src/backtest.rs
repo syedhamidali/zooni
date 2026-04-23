@@ -190,14 +190,12 @@ pub fn run_backtest(
 
     for (bar_idx, bar) in bars.iter().enumerate() {
         // Update ATR
-        if adaptive_sizing {
-            if let Some(atr_val) = atr.update(bar.high, bar.low, bar.close) {
-                // Adjust qty inversely proportional to volatility
-                // Higher ATR = smaller position, lower ATR = larger position
-                let base_atr = grid_spacing; // use grid spacing as reference
-                if atr_val > 0.0 {
-                    current_qty = qty * (base_atr / atr_val).clamp(0.5, 2.0);
-                }
+        if adaptive_sizing && let Some(atr_val) = atr.update(bar.high, bar.low, bar.close) {
+            // Adjust qty inversely proportional to volatility
+            // Higher ATR = smaller position, lower ATR = larger position
+            let base_atr = grid_spacing; // use grid spacing as reference
+            if atr_val > 0.0 {
+                current_qty = qty * (base_atr / atr_val).clamp(0.5, 2.0);
             }
         }
 
@@ -277,21 +275,18 @@ pub fn run_backtest(
                 }
             };
             if let Some(nl) = new_level {
-                if !orders.contains_key(&nl) {
+                orders.entry(nl).or_insert_with(|| {
                     let new_side = match side {
                         Side::Buy => Side::Sell,
                         Side::Sell => Side::Buy,
                     };
-                    orders.insert(
-                        nl,
-                        SimOrder {
-                            _level: nl,
-                            side: new_side,
-                            price: levels[nl],
-                            qty: current_qty,
-                        },
-                    );
-                }
+                    SimOrder {
+                        _level: nl,
+                        side: new_side,
+                        price: levels[nl],
+                        qty: current_qty,
+                    }
+                });
             }
         }
 
