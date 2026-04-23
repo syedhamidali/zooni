@@ -39,7 +39,8 @@ pub fn rsi(closes: &[f64], period: usize) -> Option<f64> {
 
     // Initial averages
     for i in 1..=period {
-        let change = closes[closes.len() - period - 1 + i] - closes[closes.len() - period - 1 + i - 1];
+        let change =
+            closes[closes.len() - period - 1 + i] - closes[closes.len() - period - 1 + i - 1];
         if change > 0.0 {
             avg_gain += change;
         } else {
@@ -84,12 +85,7 @@ pub fn atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Option
 
 /// Average Directional Index (ADX) — measures trend strength.
 /// Returns (adx, +DI, -DI). ADX > 25 suggests trending, < 20 suggests ranging.
-pub fn adx(
-    highs: &[f64],
-    lows: &[f64],
-    closes: &[f64],
-    period: usize,
-) -> Option<(f64, f64, f64)> {
+pub fn adx(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Option<(f64, f64, f64)> {
     let n = highs.len().min(lows.len()).min(closes.len());
     if n < period * 2 + 1 || period == 0 {
         return None;
@@ -187,7 +183,11 @@ pub fn adx(
 
 /// Bollinger Bands — returns (upper, middle, lower, bandwidth).
 /// Bandwidth = (upper - lower) / middle — narrow bands suggest consolidation.
-pub fn bollinger_bands(closes: &[f64], period: usize, num_std: f64) -> Option<(f64, f64, f64, f64)> {
+pub fn bollinger_bands(
+    closes: &[f64],
+    period: usize,
+    num_std: f64,
+) -> Option<(f64, f64, f64, f64)> {
     if closes.len() < period || period == 0 {
         return None;
     }
@@ -198,14 +198,22 @@ pub fn bollinger_bands(closes: &[f64], period: usize, num_std: f64) -> Option<(f
 
     let upper = mean + num_std * std_dev;
     let lower = mean - num_std * std_dev;
-    let bandwidth = if mean > 0.0 { (upper - lower) / mean } else { 0.0 };
+    let bandwidth = if mean > 0.0 {
+        (upper - lower) / mean
+    } else {
+        0.0
+    };
 
     Some((upper, mean, lower, bandwidth))
 }
 
 /// Volume-Weighted Average Price (VWAP) over the given window.
 pub fn vwap(highs: &[f64], lows: &[f64], closes: &[f64], volumes: &[f64]) -> Option<f64> {
-    let n = highs.len().min(lows.len()).min(closes.len()).min(volumes.len());
+    let n = highs
+        .len()
+        .min(lows.len())
+        .min(closes.len())
+        .min(volumes.len());
     if n == 0 {
         return None;
     }
@@ -237,10 +245,7 @@ pub fn log_return_stats(closes: &[f64]) -> Option<(f64, f64)> {
     if closes.len() < 2 {
         return None;
     }
-    let returns: Vec<f64> = closes
-        .windows(2)
-        .map(|w| (w[1] / w[0]).ln())
-        .collect();
+    let returns: Vec<f64> = closes.windows(2).map(|w| (w[1] / w[0]).ln()).collect();
     let mean = returns.iter().sum::<f64>() / returns.len() as f64;
     let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
     Some((mean, var.sqrt()))

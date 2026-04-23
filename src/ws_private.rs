@@ -117,7 +117,9 @@ async fn run_once(
         "op": "auth",
         "args": [api_key, expires, signature],
     });
-    ws.send(Message::Text(auth.to_string())).await.context("auth send failed")?;
+    ws.send(Message::Text(auth.to_string()))
+        .await
+        .context("auth send failed")?;
     debug!("auth sent, waiting for response");
 
     // Subscribe to order updates
@@ -125,7 +127,9 @@ async fn run_once(
         "op": "subscribe",
         "args": ["order"],
     });
-    ws.send(Message::Text(sub.to_string())).await.context("subscribe send failed")?;
+    ws.send(Message::Text(sub.to_string()))
+        .await
+        .context("subscribe send failed")?;
     info!("subscribed to order updates");
     let _ = tx.send(WsEvent::Connected);
 
@@ -169,7 +173,11 @@ fn handle_message(text: &str, tx: &mpsc::UnboundedSender<WsEvent>) {
     if let Ok(msg) = serde_json::from_str::<WsOrderMsg>(text) {
         if msg.topic == "order" {
             for d in &msg.data {
-                let side = if d.side == "Buy" { Side::Buy } else { Side::Sell };
+                let side = if d.side == "Buy" {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
                 let price = d.avg_price.parse::<f64>().unwrap_or(0.0);
                 let qty = d.qty.parse::<f64>().unwrap_or(0.0);
                 let cum_exec_qty = d.cum_exec_qty.parse::<f64>().unwrap_or(0.0);

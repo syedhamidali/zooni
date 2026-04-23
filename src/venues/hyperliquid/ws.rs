@@ -11,7 +11,7 @@
 //! Keep-alive: `{ "method": "ping" }`; server replies `{ "channel": "pong" }`.
 //! Market-data channels are public; user channels need a valid `user` (address).
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::Config;
 
@@ -20,8 +20,12 @@ pub struct Stream {
 }
 
 impl Stream {
-    pub fn new(cfg: Config) -> Self { Self { cfg } }
-    pub fn config(&self) -> &Config { &self.cfg }
+    pub fn new(cfg: Config) -> Self {
+        Self { cfg }
+    }
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
 
     pub async fn subscribe_l2_book(&mut self, _coin: &str) -> Result<()> {
         bail!("hyperliquid::subscribe_l2_book not yet implemented")

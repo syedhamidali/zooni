@@ -39,20 +39,20 @@ pub const INSTRUMENTS_DUMP_URL: &str = "https://api.kite.trade/instruments";
 
 /// Kite product codes (cash equity + derivatives).
 pub mod product {
-    pub const CNC: &str = "CNC";   // cash-and-carry (equity delivery)
-    pub const MIS: &str = "MIS";   // intraday
+    pub const CNC: &str = "CNC"; // cash-and-carry (equity delivery)
+    pub const MIS: &str = "MIS"; // intraday
     pub const NRML: &str = "NRML"; // F&O or commodity carry-forward
-    pub const MTF: &str = "MTF";   // margin trading facility
+    pub const MTF: &str = "MTF"; // margin trading facility
 }
 
 /// Kite exchange codes.
 pub mod exchange {
     pub const NSE: &str = "NSE";
     pub const BSE: &str = "BSE";
-    pub const NFO: &str = "NFO";   // NSE F&O
-    pub const BFO: &str = "BFO";   // BSE F&O
-    pub const CDS: &str = "CDS";   // currency derivatives
-    pub const MCX: &str = "MCX";   // commodity derivatives
+    pub const NFO: &str = "NFO"; // NSE F&O
+    pub const BFO: &str = "BFO"; // BSE F&O
+    pub const CDS: &str = "CDS"; // currency derivatives
+    pub const MCX: &str = "MCX"; // commodity derivatives
 }
 
 #[derive(Debug, Clone)]

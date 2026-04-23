@@ -52,12 +52,24 @@ pub struct ScannerConfig {
     pub kline_count: u32,
 }
 
-fn default_min_turnover() -> f64 { MIN_TURNOVER_USDT }
-fn default_max_spread() -> f64 { MAX_SPREAD_PCT }
-fn default_quote_currencies() -> Vec<String> { vec!["USDT".to_string()] }
-fn default_max_results() -> usize { 10 }
-fn default_kline_interval() -> String { "60".to_string() }
-fn default_kline_count() -> u32 { 200 }
+fn default_min_turnover() -> f64 {
+    MIN_TURNOVER_USDT
+}
+fn default_max_spread() -> f64 {
+    MAX_SPREAD_PCT
+}
+fn default_quote_currencies() -> Vec<String> {
+    vec!["USDT".to_string()]
+}
+fn default_max_results() -> usize {
+    10
+}
+fn default_kline_interval() -> String {
+    "60".to_string()
+}
+fn default_kline_count() -> u32 {
+    200
+}
 
 impl Default for ScannerConfig {
     fn default() -> Self {
@@ -105,10 +117,9 @@ fn pre_filter(tickers: &[TickerFull], cfg: &ScannerConfig) -> Vec<TickerFull> {
 
             // Filter out stablecoins trading against each other
             let stables = ["USDT", "USDC", "DAI", "BUSD", "TUSD", "FDUSD"];
-            let base = cfg
-                .quote_currencies
-                .iter()
-                .fold(t.symbol.as_str(), |s, q| s.strip_suffix(q.as_str()).unwrap_or(s));
+            let base = cfg.quote_currencies.iter().fold(t.symbol.as_str(), |s, q| {
+                s.strip_suffix(q.as_str()).unwrap_or(s)
+            });
             if stables.contains(&base) {
                 return false;
             }
@@ -232,15 +243,16 @@ pub async fn scan(client: &Client, cfg: &ScannerConfig) -> Result<Vec<ScanResult
     }
 
     // Step 4: Sort by score (highest first)
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Truncate to max_results
     results.truncate(cfg.max_results);
 
-    info!(
-        results = results.len(),
-        "Scan complete. Top candidates:"
-    );
+    info!(results = results.len(), "Scan complete. Top candidates:");
     for (i, r) in results.iter().enumerate() {
         info!(
             rank = i + 1,
@@ -266,7 +278,11 @@ pub fn format_report(results: &[ScanResult]) -> String {
 
     let mut report = String::from("📊 *Market Scan Results*\n\n");
     for (i, r) in results.iter().enumerate() {
-        let grid_icon = if r.analysis.grid_suitable { "✅" } else { "⚠️" };
+        let grid_icon = if r.analysis.grid_suitable {
+            "✅"
+        } else {
+            "⚠️"
+        };
         report.push_str(&format!(
             "{}. *{}* {} | Score: {:.0}\n   Regime: {} | ADX: {:.1} | RSI: {:.1}\n   Vol: {:.2}% | Spread: {:.3}%\n   Price: {:.4} | 24h: {:+.1}%\n",
             i + 1,

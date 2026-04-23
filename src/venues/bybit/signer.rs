@@ -19,8 +19,8 @@ pub fn sign(
     recv_window_ms: u64,
     payload: &str,
 ) -> String {
-    let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(api_secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(timestamp_ms.to_string().as_bytes());
     mac.update(api_key.as_bytes());
     mac.update(recv_window_ms.to_string().as_bytes());
@@ -44,7 +44,10 @@ mod tests {
             5_000,
             "accountType=UNIFIED",
         );
-        assert_eq!(got, "e6225ce434c96b074701455a2d73a900a6f3072ec09b29a0002667590cae19f5");
+        assert_eq!(
+            got,
+            "e6225ce434c96b074701455a2d73a900a6f3072ec09b29a0002667590cae19f5"
+        );
     }
 
     #[test]

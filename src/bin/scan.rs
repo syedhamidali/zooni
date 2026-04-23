@@ -17,7 +17,9 @@ use trading_bot::venues::bybit;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let args: Vec<String> = std::env::args().collect();
@@ -44,8 +46,10 @@ async fn main() -> Result<()> {
             }
             "--min-turnover" => {
                 i += 1;
-                scanner_cfg.min_turnover =
-                    args.get(i).and_then(|s| s.parse().ok()).unwrap_or(1_000_000.0);
+                scanner_cfg.min_turnover = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1_000_000.0);
             }
             "--interval" => {
                 i += 1;
@@ -61,7 +65,9 @@ async fn main() -> Result<()> {
                 println!("  --top, -n N           Show top N results (default: 10)");
                 println!("  --quote, -q CURRENCY  Quote currency (default: USDT)");
                 println!("  --min-turnover AMT    Minimum 24h turnover in USD (default: 1000000)");
-                println!("  --interval INTERVAL   Kline interval: 1,5,15,30,60,240,D (default: 60)");
+                println!(
+                    "  --interval INTERVAL   Kline interval: 1,5,15,30,60,240,D (default: 60)"
+                );
                 println!("  --help, -h            Show this help");
                 return Ok(());
             }

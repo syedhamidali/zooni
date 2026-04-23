@@ -5,11 +5,11 @@
 //! it gracefully winds down unprofitable grids and switches to better opportunities.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use tokio::sync::Mutex;
 use tokio::time;
@@ -19,7 +19,7 @@ use crate::alerts::Alerter;
 use crate::config::{AutoPilotConfig, BotConfig};
 use crate::grid::{Grid, LevelOrder};
 use crate::persistence::{Db, FillRow, OrderRow, OrderStatus};
-use crate::retry::{with_retry, CircuitBreaker, RetryPolicy};
+use crate::retry::{CircuitBreaker, RetryPolicy, with_retry};
 use crate::risk::{Market, RiskConfig, RiskEngine};
 use crate::scanner::{self, ScanResult};
 use crate::sizing;
@@ -43,9 +43,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
     let dry_run = cfg.bot.dry_run;
     let ap_cfg = cfg.autopilot.clone();
 
-    info!(
-        "🤖 AUTO-PILOT MODE — bot will autonomously scan, pick, and trade"
-    );
+    info!("🤖 AUTO-PILOT MODE — bot will autonomously scan, pick, and trade");
     if dry_run {
         info!("*** DRY-RUN MODE — no orders will be sent to the exchange ***");
     }
@@ -58,10 +56,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
     };
 
     // -- Alerts --
-    let alerter = Arc::new(Alerter::new(
-        cfg.alerts.clone(),
-        "autopilot".to_string(),
-    ));
+    let alerter = Arc::new(Alerter::new(cfg.alerts.clone(), "autopilot".to_string()));
     alerter
         .lifecycle("Auto-pilot starting — scanning for opportunities...")
         .await;
@@ -156,7 +151,9 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
         info!("Dry-run: using configured symbol {}", cfg.grid.symbol);
         vec![]
     } else {
-        scanner::scan(&client, &ap_cfg.scanner).await.unwrap_or_default()
+        scanner::scan(&client, &ap_cfg.scanner)
+            .await
+            .unwrap_or_default()
     };
 
     // Deploy grids on initial scan results
@@ -173,8 +170,17 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
 
         for result in to_deploy {
             match deploy_grid(
-                &client, &result, equity, &ap_cfg, &cfg, &engine, &db,
-                &alerter, &retry_policy, &breaker, dry_run,
+                &client,
+                &result,
+                equity,
+                &ap_cfg,
+                &cfg,
+                &engine,
+                &db,
+                &alerter,
+                &retry_policy,
+                &breaker,
+                dry_run,
             )
             .await
             {
@@ -191,13 +197,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
         // Dry-run: deploy on configured symbol with configured params
         let grid_cfg = &cfg.grid;
         let mid = (grid_cfg.lower_price + grid_cfg.upper_price) / 2.0;
-        let mut g = Grid::new(
-            grid_cfg,
-            "0.01".into(),
-            "0.000001".into(),
-            0.0001,
-            5.0,
-        );
+        let mut g = Grid::new(grid_cfg, "0.01".into(), "0.000001".into(), 0.0001, 5.0);
         let plan = g.plan_initial(mid);
         info!(
             symbol = %grid_cfg.symbol,
@@ -263,10 +263,8 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                 if dry_run {
                     continue;
                 }
-                match reconcile_grid(
-                    &client, ag, &engine, &db, &alerter, &retry_policy, &breaker,
-                )
-                .await
+                match reconcile_grid(&client, ag, &engine, &db, &alerter, &retry_policy, &breaker)
+                    .await
                 {
                     Ok(_) => breaker.record_success(),
                     Err(e) => {
@@ -301,9 +299,18 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             match scanner::scan(&client, &ap_cfg.scanner).await {
                 Ok(results) => {
                     evaluate_and_switch(
-                        &client, &mut active_grids, &results, equity,
-                        &ap_cfg, &cfg, &engine, &db, &alerter, &retry_policy,
-                        &breaker, dry_run,
+                        &client,
+                        &mut active_grids,
+                        &results,
+                        equity,
+                        &ap_cfg,
+                        &cfg,
+                        &engine,
+                        &db,
+                        &alerter,
+                        &retry_policy,
+                        &breaker,
+                        dry_run,
                     )
                     .await;
                 }
@@ -335,7 +342,10 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
     }
 
     // -- Shutdown: wind down all grids --
-    info!("Auto-pilot shutdown: winding down {} grid(s)", active_grids.len());
+    info!(
+        "Auto-pilot shutdown: winding down {} grid(s)",
+        active_grids.len()
+    );
     for (symbol, ag) in &mut active_grids {
         if !dry_run {
             info!(symbol = %symbol, "cancelling all orders");
@@ -385,13 +395,10 @@ async fn deploy_grid(
     info!(symbol = %symbol, score = scan.score, "Deploying grid...");
 
     // Get the suggested range from regime analysis, or calculate from price
-    let (lower, upper) = scan
-        .analysis
-        .suggested_range
-        .unwrap_or_else(|| {
-            let spread = scan.last_price * 0.05; // default 5% range each way
-            (scan.last_price - spread, scan.last_price + spread)
-        });
+    let (lower, upper) = scan.analysis.suggested_range.unwrap_or_else(|| {
+        let spread = scan.last_price * 0.05; // default 5% range each way
+        (scan.last_price - spread, scan.last_price + spread)
+    });
 
     let num_levels = scan.analysis.suggested_levels.unwrap_or(15);
 
@@ -453,7 +460,13 @@ async fn deploy_grid(
         trailing_profit_threshold: 0.0,
     };
 
-    let mut g = Grid::new(&grid_cfg, tick_size.clone(), base_precision.clone(), min_qty, min_amt);
+    let mut g = Grid::new(
+        &grid_cfg,
+        tick_size.clone(),
+        base_precision.clone(),
+        min_qty,
+        min_amt,
+    );
 
     if let Err(msg) = g.validate_sizing() {
         return Err(anyhow!("grid sizing invalid for {}: {}", symbol, msg));
@@ -485,7 +498,12 @@ async fn deploy_grid(
             }
         }
 
-        let link_id = format!("ap-{}-{}-{}", symbol, p.level_index, uuid::Uuid::new_v4().as_simple());
+        let link_id = format!(
+            "ap-{}-{}-{}",
+            symbol,
+            p.level_index,
+            uuid::Uuid::new_v4().as_simple()
+        );
 
         if dry_run {
             let fake_id = format!("DRY-{}", uuid::Uuid::new_v4().as_simple());
@@ -503,7 +521,14 @@ async fn deploy_grid(
             let price_str = p.price_str.clone();
             let link_clone = link_id.clone();
             match with_retry(retry_policy, "place_order", || {
-                client.place_spot_order(symbol, p.side, "Limit", &qty_str, Some(&price_str), Some(&link_clone))
+                client.place_spot_order(
+                    symbol,
+                    p.side,
+                    "Limit",
+                    &qty_str,
+                    Some(&price_str),
+                    Some(&link_clone),
+                )
             })
             .await
             {
@@ -531,7 +556,10 @@ async fn deploy_grid(
                         filled_qty: 0.0,
                         filled_price: 0.0,
                     });
-                    engine.lock().await.on_fill(Market::Crypto, symbol, "grid", notional);
+                    engine
+                        .lock()
+                        .await
+                        .on_fill(Market::Crypto, symbol, "grid", notional);
                     breaker.record_success();
                 }
                 Err(e) => {
@@ -623,9 +651,17 @@ async fn reconcile_grid(
             });
         }
 
-        let side_str = match side { Side::Buy => "BUY", Side::Sell => "SELL" };
-        alerter.fill(symbol, side_str, fill_price, fill_qty, pnl).await;
-        engine.lock().await.on_fill(Market::Crypto, symbol, "grid", -notional);
+        let side_str = match side {
+            Side::Buy => "BUY",
+            Side::Sell => "SELL",
+        };
+        alerter
+            .fill(symbol, side_str, fill_price, fill_qty, pnl)
+            .await;
+        engine
+            .lock()
+            .await
+            .on_fill(Market::Crypto, symbol, "grid", -notional);
 
         // Place replacement
         if let Some(plan) = ag.grid.plan_replacement(level, side) {
@@ -637,18 +673,33 @@ async fn reconcile_grid(
             let notional = price * qty;
             {
                 let guard = engine.lock().await;
-                if guard.pretrade_check(Market::Crypto, symbol, "grid", notional).is_err() {
+                if guard
+                    .pretrade_check(Market::Crypto, symbol, "grid", notional)
+                    .is_err()
+                {
                     continue;
                 }
             }
 
-            let link_id = format!("ap-{}-{}-{}", symbol, plan.level_index, uuid::Uuid::new_v4().as_simple());
+            let link_id = format!(
+                "ap-{}-{}-{}",
+                symbol,
+                plan.level_index,
+                uuid::Uuid::new_v4().as_simple()
+            );
             let qty_str = plan.qty_str.clone();
             let price_str = plan.price_str.clone();
             let link_clone = link_id.clone();
 
             match with_retry(retry_policy, "place_replacement", || {
-                client.place_spot_order(symbol, plan.side, "Limit", &qty_str, Some(&price_str), Some(&link_clone))
+                client.place_spot_order(
+                    symbol,
+                    plan.side,
+                    "Limit",
+                    &qty_str,
+                    Some(&price_str),
+                    Some(&link_clone),
+                )
             })
             .await
             {
@@ -676,7 +727,10 @@ async fn reconcile_grid(
                         filled_qty: 0.0,
                         filled_price: 0.0,
                     });
-                    engine.lock().await.on_fill(Market::Crypto, symbol, "grid", notional);
+                    engine
+                        .lock()
+                        .await
+                        .on_fill(Market::Crypto, symbol, "grid", notional);
                 }
                 Err(e) => {
                     warn!(symbol = %symbol, level = plan.level_index, err = %e, "replacement failed");
@@ -735,9 +789,11 @@ async fn evaluate_and_switch(
                 && active_grids.len() >= ap_cfg.max_grids
             {
                 // Find the worst performing grid
-                let worst = active_grids
-                    .iter()
-                    .min_by(|a, b| a.1.score.partial_cmp(&b.1.score).unwrap_or(std::cmp::Ordering::Equal));
+                let worst = active_grids.iter().min_by(|a, b| {
+                    a.1.score
+                        .partial_cmp(&b.1.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 if let Some((worst_sym, _)) = worst {
                     if worst_sym == symbol {
                         info!(
@@ -787,8 +843,17 @@ async fn evaluate_and_switch(
 
         for candidate in new_candidates {
             match deploy_grid(
-                client, candidate, equity, ap_cfg, bot_cfg, engine, db,
-                alerter, retry_policy, breaker, dry_run,
+                client,
+                candidate,
+                equity,
+                ap_cfg,
+                bot_cfg,
+                engine,
+                db,
+                alerter,
+                retry_policy,
+                breaker,
+                dry_run,
             )
             .await
             {

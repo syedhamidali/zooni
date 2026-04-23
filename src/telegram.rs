@@ -10,8 +10,8 @@
 //!
 //! Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -27,7 +27,9 @@ pub struct TelegramConfig {
     pub poll_secs: u64,
 }
 
-fn default_poll() -> u64 { 5 }
+fn default_poll() -> u64 {
+    5
+}
 
 impl Default for TelegramConfig {
     fn default() -> Self {
@@ -110,13 +112,11 @@ impl TelegramBot {
                                     kill.store(true, Ordering::SeqCst);
                                     "Kill switch tripped. Bot is pausing.".to_string()
                                 }
-                                "/help" => {
-                                    "/status — current state\n\
+                                "/help" => "/status — current state\n\
                                      /pnl — P&L breakdown\n\
                                      /pause — stop trading\n\
                                      /help — this message"
-                                        .to_string()
-                                }
+                                    .to_string(),
                                 _ => format!("Unknown command: {text}\nTry /help"),
                             };
                             if let Err(e) = self.send(&response).await {

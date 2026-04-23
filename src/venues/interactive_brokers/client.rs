@@ -13,7 +13,7 @@
 //! is length-prefixed UTF-8 text, with numeric message IDs. A dedicated crate is
 //! strongly preferred over a hand-roll.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::Config;
 use crate::types::{OrderKind, Side};
@@ -23,8 +23,12 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(cfg: Config) -> Self { Self { cfg } }
-    pub fn config(&self) -> &Config { &self.cfg }
+    pub fn new(cfg: Config) -> Self {
+        Self { cfg }
+    }
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
 
     /// TCP + handshake + startAPI; returns once `nextValidId` has been received.
     pub async fn connect(&mut self) -> Result<()> {

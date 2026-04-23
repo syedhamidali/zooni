@@ -113,8 +113,16 @@ pub fn run_backtest(
     _base_precision: &str,
     adaptive_sizing: bool,
 ) -> BacktestResult {
-    let levels = compute_levels(grid_cfg.lower_price, grid_cfg.upper_price, grid_cfg.levels as usize);
-    let grid_spacing = if levels.len() >= 2 { levels[1] - levels[0] } else { 0.0 };
+    let levels = compute_levels(
+        grid_cfg.lower_price,
+        grid_cfg.upper_price,
+        grid_cfg.levels as usize,
+    );
+    let grid_spacing = if levels.len() >= 2 {
+        levels[1] - levels[0]
+    } else {
+        0.0
+    };
     let qty = grid_cfg.qty_per_level_base;
 
     let mut equity = starting_equity;
@@ -167,12 +175,15 @@ pub fn run_backtest(
         } else {
             continue;
         };
-        orders.insert(i, SimOrder {
-            _level: i,
-            side,
-            price: level_price,
-            qty: current_qty,
-        });
+        orders.insert(
+            i,
+            SimOrder {
+                _level: i,
+                side,
+                price: level_price,
+                qty: current_qty,
+            },
+        );
     }
 
     let mut prev_equity = equity;
@@ -251,10 +262,18 @@ pub fn run_backtest(
             // Place replacement order
             let new_level = match side {
                 Side::Buy => {
-                    if level + 1 < levels.len() { Some(level + 1) } else { None }
+                    if level + 1 < levels.len() {
+                        Some(level + 1)
+                    } else {
+                        None
+                    }
                 }
                 Side::Sell => {
-                    if level > 0 { Some(level - 1) } else { None }
+                    if level > 0 {
+                        Some(level - 1)
+                    } else {
+                        None
+                    }
                 }
             };
             if let Some(nl) = new_level {
@@ -263,12 +282,15 @@ pub fn run_backtest(
                         Side::Buy => Side::Sell,
                         Side::Sell => Side::Buy,
                     };
-                    orders.insert(nl, SimOrder {
-                        _level: nl,
-                        side: new_side,
-                        price: levels[nl],
-                        qty: current_qty,
-                    });
+                    orders.insert(
+                        nl,
+                        SimOrder {
+                            _level: nl,
+                            side: new_side,
+                            price: levels[nl],
+                            qty: current_qty,
+                        },
+                    );
                 }
             }
         }
@@ -306,7 +328,10 @@ pub fn run_backtest(
     // Sharpe ratio (annualized, assuming daily returns)
     let sharpe_ratio = if daily_returns.len() > 1 {
         let mean = daily_returns.iter().sum::<f64>() / daily_returns.len() as f64;
-        let variance = daily_returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>()
+        let variance = daily_returns
+            .iter()
+            .map(|r| (r - mean).powi(2))
+            .sum::<f64>()
             / (daily_returns.len() - 1) as f64;
         let std_dev = variance.sqrt();
         if std_dev > 0.0 {
@@ -361,9 +386,19 @@ pub fn parse_csv(data: &str) -> Vec<PriceBar> {
         let high = cols[2].trim().parse::<f64>().unwrap_or(0.0);
         let low = cols[3].trim().parse::<f64>().unwrap_or(0.0);
         let close = cols[4].trim().parse::<f64>().unwrap_or(0.0);
-        let volume = cols.get(5).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
+        let volume = cols
+            .get(5)
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
         if open > 0.0 && close > 0.0 {
-            bars.push(PriceBar { timestamp, open, high, low, close, volume });
+            bars.push(PriceBar {
+                timestamp,
+                open,
+                high,
+                low,
+                close,
+                volume,
+            });
         }
     }
     bars
@@ -382,7 +417,9 @@ pub fn generate_synthetic_data(
 
     for i in 0..bars {
         // Simple LCG PRNG
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng_state = rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let uniform = (rng_state >> 33) as f64 / (1u64 << 31) as f64; // 0..1
         let change = (uniform - 0.5) * 2.0 * volatility * price;
 
@@ -445,7 +482,11 @@ pub fn optimize_grid(
     }
 
     // Sort by total P&L descending
-    results.sort_by(|a, b| b.3.total_pnl.partial_cmp(&a.3.total_pnl).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.3.total_pnl
+            .partial_cmp(&a.3.total_pnl)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results
 }
 

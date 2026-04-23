@@ -56,9 +56,15 @@ impl Default for AutoPilotConfig {
     }
 }
 
-fn default_scan_interval() -> u64 { 1800 }  // 30 minutes
-fn default_switch_threshold() -> f64 { 15.0 } // need 15+ score improvement to switch
-fn default_max_grids() -> usize { 1 }
+fn default_scan_interval() -> u64 {
+    1800
+} // 30 minutes
+fn default_switch_threshold() -> f64 {
+    15.0
+} // need 15+ score improvement to switch
+fn default_max_grids() -> usize {
+    1
+}
 
 #[derive(Debug, Deserialize)]
 pub struct BybitCfg {
@@ -98,13 +104,20 @@ pub struct GridCfg {
 #[derive(Debug, Deserialize)]
 pub struct RiskCfg {
     pub starting_equity_quote: f64,
-    #[serde(default = "default_max_total")] pub max_total_exposure: f64,
-    #[serde(default = "default_max_market")] pub max_per_market: f64,
-    #[serde(default = "default_max_symbol")] pub max_per_symbol: f64,
-    #[serde(default = "default_max_strategy")] pub max_per_strategy: f64,
-    #[serde(default = "default_daily_loss")] pub daily_loss_limit: f64,
-    #[serde(default = "default_weekly_loss")] pub weekly_loss_limit: f64,
-    #[serde(default = "default_drawdown")] pub max_drawdown: f64,
+    #[serde(default = "default_max_total")]
+    pub max_total_exposure: f64,
+    #[serde(default = "default_max_market")]
+    pub max_per_market: f64,
+    #[serde(default = "default_max_symbol")]
+    pub max_per_symbol: f64,
+    #[serde(default = "default_max_strategy")]
+    pub max_per_strategy: f64,
+    #[serde(default = "default_daily_loss")]
+    pub daily_loss_limit: f64,
+    #[serde(default = "default_weekly_loss")]
+    pub weekly_loss_limit: f64,
+    #[serde(default = "default_drawdown")]
+    pub max_drawdown: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,22 +155,54 @@ impl Default for BotSettings {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_recv_window() -> u64 { 5_000 }
-fn default_account_type() -> String { "UNIFIED".to_string() }
-fn default_poll_secs() -> u64 { 3 }
-fn default_max_total() -> f64 { 0.80 }
-fn default_max_market() -> f64 { 0.40 }
-fn default_max_symbol() -> f64 { 0.20 }
-fn default_max_strategy() -> f64 { 0.15 }
-fn default_daily_loss() -> f64 { 0.05 }
-fn default_weekly_loss() -> f64 { 0.10 }
-fn default_drawdown() -> f64 { 0.15 }
-fn default_db_path() -> String { "trading-bot.db".to_string() }
-fn default_max_retries() -> u32 { 3 }
-fn default_circuit_breaker_threshold() -> u32 { 5 }
-fn default_circuit_breaker_cooldown() -> u64 { 60 }
-fn default_shutdown_wait() -> u64 { 10 }
+fn default_true() -> bool {
+    true
+}
+fn default_recv_window() -> u64 {
+    5_000
+}
+fn default_account_type() -> String {
+    "UNIFIED".to_string()
+}
+fn default_poll_secs() -> u64 {
+    3
+}
+fn default_max_total() -> f64 {
+    0.80
+}
+fn default_max_market() -> f64 {
+    0.40
+}
+fn default_max_symbol() -> f64 {
+    0.20
+}
+fn default_max_strategy() -> f64 {
+    0.15
+}
+fn default_daily_loss() -> f64 {
+    0.05
+}
+fn default_weekly_loss() -> f64 {
+    0.10
+}
+fn default_drawdown() -> f64 {
+    0.15
+}
+fn default_db_path() -> String {
+    "trading-bot.db".to_string()
+}
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_circuit_breaker_threshold() -> u32 {
+    5
+}
+fn default_circuit_breaker_cooldown() -> u64 {
+    60
+}
+fn default_shutdown_wait() -> u64 {
+    10
+}
 
 impl BotConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -176,13 +221,115 @@ impl BotConfig {
                 self.grid.lower_price > 0.0 && self.grid.upper_price > self.grid.lower_price,
                 "grid.lower_price must be > 0 and < grid.upper_price",
             );
-            anyhow::ensure!(self.grid.qty_per_level_base > 0.0, "grid.qty_per_level_base must be > 0");
+            anyhow::ensure!(
+                self.grid.qty_per_level_base > 0.0,
+                "grid.qty_per_level_base must be > 0"
+            );
         }
         if !self.bot.dry_run {
-            anyhow::ensure!(!self.bybit.api_key.is_empty(), "bybit.api_key must be set (or enable dry_run)");
-            anyhow::ensure!(!self.bybit.api_secret.is_empty(), "bybit.api_secret must be set (or enable dry_run)");
+            anyhow::ensure!(
+                !self.bybit.api_key.is_empty(),
+                "bybit.api_key must be set (or enable dry_run)"
+            );
+            anyhow::ensure!(
+                !self.bybit.api_secret.is_empty(),
+                "bybit.api_secret must be set (or enable dry_run)"
+            );
         }
-        anyhow::ensure!(self.risk.starting_equity_quote > 0.0, "risk.starting_equity_quote must be > 0");
+        anyhow::ensure!(
+            self.risk.starting_equity_quote > 0.0,
+            "risk.starting_equity_quote must be > 0"
+        );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_toml(overrides: &str) -> String {
+        format!(
+            r#"
+[bybit]
+api_key = "test_key"
+api_secret = "test_secret"
+testnet = true
+
+[grid]
+symbol = "BTCUSDT"
+lower_price = 60000.0
+upper_price = 70000.0
+levels = 10
+qty_per_level_base = 0.001
+
+[risk]
+starting_equity_quote = 10000.0
+
+[bot]
+dry_run = true
+
+{overrides}
+"#
+        )
+    }
+
+    #[test]
+    fn loads_minimal_config() {
+        let toml = minimal_toml("");
+        let cfg: BotConfig = toml::from_str(&toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.grid.symbol, "BTCUSDT");
+        assert_eq!(cfg.grid.levels, 10);
+        assert!(cfg.bot.dry_run);
+    }
+
+    #[test]
+    fn rejects_zero_levels() {
+        let toml = minimal_toml("").replace("levels = 10", "levels = 1");
+        let cfg: BotConfig = toml::from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_inverted_range() {
+        let toml = minimal_toml("").replace("lower_price = 60000.0", "lower_price = 80000.0");
+        let cfg: BotConfig = toml::from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_keys_in_live_mode() {
+        let toml = minimal_toml("")
+            .replace("dry_run = true", "dry_run = false")
+            .replace("api_key = \"test_key\"", "api_key = \"\"");
+        let cfg: BotConfig = toml::from_str(&toml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn allows_empty_keys_in_dry_run() {
+        let toml = minimal_toml("")
+            .replace("api_key = \"test_key\"", "api_key = \"\"")
+            .replace("api_secret = \"test_secret\"", "api_secret = \"\"");
+        let cfg: BotConfig = toml::from_str(&toml).unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn autopilot_skips_grid_validation() {
+        let toml = minimal_toml("[autopilot]\nenabled = true")
+            .replace("levels = 10", "levels = 0")
+            .replace("qty_per_level_base = 0.001", "qty_per_level_base = 0.0");
+        let cfg: BotConfig = toml::from_str(&toml).unwrap();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn defaults_are_sensible() {
+        let settings = BotSettings::default();
+        assert!(!settings.dry_run);
+        assert_eq!(settings.max_retries, 3);
+        assert_eq!(settings.circuit_breaker_threshold, 5);
     }
 }

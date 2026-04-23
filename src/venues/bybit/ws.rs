@@ -43,15 +43,22 @@ struct TickerData {
 }
 
 pub async fn run_public_ticker(symbol: &str) -> Result<()> {
-    info!(url = WS_PUBLIC_LINEAR, symbol, "connecting to Bybit linear public WS");
-    let (mut ws, _resp) = connect_async(WS_PUBLIC_LINEAR).await.context("ws connect failed")?;
+    info!(
+        url = WS_PUBLIC_LINEAR,
+        symbol, "connecting to Bybit linear public WS"
+    );
+    let (mut ws, _resp) = connect_async(WS_PUBLIC_LINEAR)
+        .await
+        .context("ws connect failed")?;
     info!("connected");
 
     let sub = serde_json::json!({
         "op": "subscribe",
         "args": [format!("tickers.{symbol}")],
     });
-    ws.send(Message::Text(sub.to_string())).await.context("subscribe send failed")?;
+    ws.send(Message::Text(sub.to_string()))
+        .await
+        .context("subscribe send failed")?;
     info!(symbol, "subscribe sent");
 
     let mut ping_tick = interval(PING_INTERVAL);

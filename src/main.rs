@@ -11,9 +11,21 @@ use tracing_subscriber::EnvFilter;
 
 use trading_bot::config;
 
+const VERSION: &str = env!("ZOONI_VERSION");
+const GIT_HASH: &str = match option_env!("ZOONI_GIT_HASH") {
+    Some(h) => h,
+    None => "unknown",
+};
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("zooni {VERSION} ({GIT_HASH})");
+        return Ok(());
+    }
+
     let use_tui = args.iter().any(|a| a == "--tui");
 
     if !use_tui {

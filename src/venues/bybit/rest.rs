@@ -9,7 +9,7 @@
 //!   { "retCode": 0, "retMsg": "OK", "result": {...}, "time": ... }
 //! Anything with retCode != 0 is an error.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client as Http;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -220,12 +220,24 @@ struct OpenOrdersResult {
 
 impl Client {
     pub fn new(cfg: Config) -> Self {
-        let base = if cfg.testnet { REST_BASE_TESTNET } else { REST_BASE };
-        Self { http: Http::new(), base, cfg }
+        let base = if cfg.testnet {
+            REST_BASE_TESTNET
+        } else {
+            REST_BASE
+        };
+        Self {
+            http: Http::new(),
+            base,
+            cfg,
+        }
     }
 
-    pub fn base_url(&self) -> &str { self.base }
-    pub fn is_testnet(&self) -> bool { self.cfg.testnet }
+    pub fn base_url(&self) -> &str {
+        self.base
+    }
+    pub fn is_testnet(&self) -> bool {
+        self.cfg.testnet
+    }
 
     fn creds(&self) -> Result<(&str, &str, u64)> {
         let c = self
@@ -237,7 +249,10 @@ impl Client {
     }
 
     fn timestamp_ms() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     // -- Public (unauthenticated) --------------------------------------------
@@ -254,7 +269,11 @@ impl Client {
         let env: Envelope<InstrumentsInfoResult> =
             res.json().await.context("instruments-info parse failed")?;
         if env.ret_code != 0 {
-            return Err(anyhow!("instruments-info error {}: {}", env.ret_code, env.ret_msg));
+            return Err(anyhow!(
+                "instruments-info error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
         }
         env.result
             .and_then(|r| r.list.into_iter().next())
@@ -319,7 +338,8 @@ impl Client {
         if env.ret_code != 0 {
             return Err(anyhow!("bybit error {}: {}", env.ret_code, env.ret_msg));
         }
-        env.result.ok_or_else(|| anyhow!("bybit: empty result for {}", path))
+        env.result
+            .ok_or_else(|| anyhow!("bybit: empty result for {}", path))
     }
 
     // -- Authenticated POST --------------------------------------------------
@@ -352,7 +372,8 @@ impl Client {
         if env.ret_code != 0 {
             return Err(anyhow!("bybit error {}: {}", env.ret_code, env.ret_msg));
         }
-        env.result.ok_or_else(|| anyhow!("bybit: empty result for {}", path))
+        env.result
+            .ok_or_else(|| anyhow!("bybit: empty result for {}", path))
     }
 
     // -- High-level methods --------------------------------------------------
@@ -360,7 +381,10 @@ impl Client {
     /// Wallet balance for an account type. Spot accounts on testnet are usually UNIFIED.
     pub async fn wallet_balance(&self, account_type: &str) -> Result<Vec<WalletBalanceAccount>> {
         let r: WalletBalanceResult = self
-            .signed_get("/v5/account/wallet-balance", &[("accountType", account_type)])
+            .signed_get(
+                "/v5/account/wallet-balance",
+                &[("accountType", account_type)],
+            )
             .await?;
         Ok(r.list)
     }
@@ -375,7 +399,10 @@ impl Client {
         price: Option<&str>,
         order_link_id: Option<&str>,
     ) -> Result<PlaceOrderResult> {
-        let side_str = match side { Side::Buy => "Buy", Side::Sell => "Sell" };
+        let side_str = match side {
+            Side::Buy => "Buy",
+            Side::Sell => "Sell",
+        };
         let req = PlaceOrderReq {
             category: "spot",
             symbol,
@@ -383,13 +410,21 @@ impl Client {
             order_type,
             qty: qty.to_string(),
             price: price.map(|p| p.to_string()),
-            time_in_force: if order_type == "Limit" { Some("GTC") } else { None },
+            time_in_force: if order_type == "Limit" {
+                Some("GTC")
+            } else {
+                None
+            },
             order_link_id,
         };
         self.signed_post("/v5/order/create", &req).await
     }
 
-    pub async fn cancel_spot_order(&self, symbol: &str, order_id: &str) -> Result<CancelOrderResult> {
+    pub async fn cancel_spot_order(
+        &self,
+        symbol: &str,
+        order_id: &str,
+    ) -> Result<CancelOrderResult> {
         let req = CancelOrderReq {
             category: "spot",
             symbol,
@@ -401,11 +436,20 @@ impl Client {
 
     pub async fn cancel_all_spot(&self, symbol: &str) -> Result<()> {
         #[derive(Serialize)]
-        struct Req<'a> { category: &'a str, symbol: &'a str }
+        struct Req<'a> {
+            category: &'a str,
+            symbol: &'a str,
+        }
         #[derive(Deserialize)]
         struct Resp {}
         let _: Resp = self
-            .signed_post("/v5/order/cancel-all", &Req { category: "spot", symbol })
+            .signed_post(
+                "/v5/order/cancel-all",
+                &Req {
+                    category: "spot",
+                    symbol,
+                },
+            )
             .await?;
         Ok(())
     }
@@ -430,9 +474,14 @@ impl Client {
             .send()
             .await
             .context("all tickers request failed")?;
-        let env: Envelope<AllTickersResult> = res.json().await.context("all tickers parse failed")?;
+        let env: Envelope<AllTickersResult> =
+            res.json().await.context("all tickers parse failed")?;
         if env.ret_code != 0 {
-            return Err(anyhow!("all tickers error {}: {}", env.ret_code, env.ret_msg));
+            return Err(anyhow!(
+                "all tickers error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
         }
         Ok(env.result.map(|r| r.list).unwrap_or_default())
     }
@@ -440,12 +489,7 @@ impl Client {
     /// Fetch kline (candlestick) data for a symbol.
     /// `interval`: "1" (1m), "5", "15", "30", "60", "240", "D", "W"
     /// `limit`: max 1000 per call.
-    pub async fn klines(
-        &self,
-        symbol: &str,
-        interval: &str,
-        limit: u32,
-    ) -> Result<Vec<Kline>> {
+    pub async fn klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>> {
         let url = format!("{}/v5/market/kline", self.base);
         let limit_str = limit.to_string();
         let res = self
@@ -468,15 +512,13 @@ impl Client {
         // Bybit returns newest first; reverse to chronological order
         let mut klines: Vec<Kline> = raw
             .into_iter()
-            .map(|row| {
-                Kline {
-                    timestamp: row[0].parse().unwrap_or(0),
-                    open: row[1].parse().unwrap_or(0.0),
-                    high: row[2].parse().unwrap_or(0.0),
-                    low: row[3].parse().unwrap_or(0.0),
-                    close: row[4].parse().unwrap_or(0.0),
-                    volume: row[5].parse().unwrap_or(0.0),
-                }
+            .map(|row| Kline {
+                timestamp: row[0].parse().unwrap_or(0),
+                open: row[1].parse().unwrap_or(0.0),
+                high: row[2].parse().unwrap_or(0.0),
+                low: row[3].parse().unwrap_or(0.0),
+                close: row[4].parse().unwrap_or(0.0),
+                volume: row[5].parse().unwrap_or(0.0),
             })
             .collect();
         klines.reverse();
@@ -493,12 +535,23 @@ impl Client {
             time_nano: String,
         }
         let url = format!("{}/v5/market/time", self.base);
-        let res = self.http.get(&url).send().await.context("server time request failed")?;
+        let res = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .context("server time request failed")?;
         let env: Envelope<TimeResult> = res.json().await.context("server time parse failed")?;
         if env.ret_code != 0 {
-            return Err(anyhow!("server time error {}: {}", env.ret_code, env.ret_msg));
+            return Err(anyhow!(
+                "server time error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
         }
-        let result = env.result.ok_or_else(|| anyhow!("server time: empty result"))?;
+        let result = env
+            .result
+            .ok_or_else(|| anyhow!("server time: empty result"))?;
         // timeSecond is epoch seconds as a string
         let secs: u64 = result.time_second.parse().unwrap_or(0);
         Ok(secs * 1000) // return as millis

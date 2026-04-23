@@ -17,20 +17,28 @@
 //!
 //! Heartbeat: server sends a 1-byte frame every ~1s; if no data for >5s → reconnect.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::Config;
 
 #[derive(Debug, Clone, Copy)]
-pub enum Mode { Ltp, Quote, Full }
+pub enum Mode {
+    Ltp,
+    Quote,
+    Full,
+}
 
 pub struct Ticker {
     cfg: Config,
 }
 
 impl Ticker {
-    pub fn new(cfg: Config) -> Self { Self { cfg } }
-    pub fn config(&self) -> &Config { &self.cfg }
+    pub fn new(cfg: Config) -> Self {
+        Self { cfg }
+    }
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
 
     pub async fn connect(&mut self) -> Result<()> {
         bail!("zerodha::ticker::connect not yet implemented")

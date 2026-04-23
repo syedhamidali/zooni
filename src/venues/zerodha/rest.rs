@@ -18,7 +18,7 @@
 //!   GET  /trades                      — trades for the day
 //!   GET  /quote[/ltp | /ohlc]         — quotes (up to 500 instruments per call)
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use reqwest::Client as Http;
 
 use super::{Config, REST_BASE};
@@ -32,12 +32,22 @@ pub struct Client {
 
 impl Client {
     pub fn new(cfg: Config) -> Self {
-        Self { http: Http::new(), base: REST_BASE, cfg }
+        Self {
+            http: Http::new(),
+            base: REST_BASE,
+            cfg,
+        }
     }
 
-    pub fn base_url(&self) -> &str { self.base }
-    pub fn config(&self) -> &Config { &self.cfg }
-    pub fn http(&self) -> &Http { &self.http }
+    pub fn base_url(&self) -> &str {
+        self.base
+    }
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+    pub fn http(&self) -> &Http {
+        &self.http
+    }
 
     /// POST /session/token — body contains api_key, request_token, checksum.
     /// Checksum = hex(SHA256(api_key + request_token + api_secret)).

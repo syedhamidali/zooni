@@ -61,10 +61,10 @@ pub fn recommend(
 ) -> SizingRecommendation {
     // Base allocation: what fraction of equity to put into this grid
     let mut base_fraction = match analysis.regime {
-        crate::regime::Regime::Ranging => 0.30,      // ideal conditions
-        crate::regime::Regime::TrendingUp => 0.15,    // can work but risky
-        crate::regime::Regime::TrendingDown => 0.10,  // dangerous, minimal
-        crate::regime::Regime::Volatile => 0.05,      // stay mostly out
+        crate::regime::Regime::Ranging => 0.30,    // ideal conditions
+        crate::regime::Regime::TrendingUp => 0.15, // can work but risky
+        crate::regime::Regime::TrendingDown => 0.10, // dangerous, minimal
+        crate::regime::Regime::Volatile => 0.05,   // stay mostly out
     };
 
     // Scale by confidence

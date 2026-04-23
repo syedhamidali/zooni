@@ -11,7 +11,7 @@
 //! The `action` is hashed with Hyperliquid's EIP-712 domain + types and signed
 //! with the agent wallet's private key.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use reqwest::Client as Http;
 
 use super::{Config, REST_BASE, REST_BASE_TESTNET};
@@ -24,13 +24,27 @@ pub struct Client {
 
 impl Client {
     pub fn new(cfg: Config) -> Self {
-        let base = if cfg.testnet { REST_BASE_TESTNET } else { REST_BASE };
-        Self { http: Http::new(), base, cfg }
+        let base = if cfg.testnet {
+            REST_BASE_TESTNET
+        } else {
+            REST_BASE
+        };
+        Self {
+            http: Http::new(),
+            base,
+            cfg,
+        }
     }
 
-    pub fn base_url(&self) -> &str { self.base }
-    pub fn config(&self) -> &Config { &self.cfg }
-    pub fn http(&self) -> &Http { &self.http }
+    pub fn base_url(&self) -> &str {
+        self.base
+    }
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+    pub fn http(&self) -> &Http {
+        &self.http
+    }
 
     /// POST /info { type: "meta" } — exchange metadata (universes, leverage caps, funding).
     pub async fn meta(&self) -> Result<()> {
@@ -65,6 +79,10 @@ impl Client {
 }
 
 /// Placeholder signature. Real impl will use `alloy-signer-local` to EIP-712 sign the action.
-fn sign_action(_private_key_hex: &str, _action_json: &str, _nonce_ms: u64) -> Result<(String, String, u8)> {
+fn sign_action(
+    _private_key_hex: &str,
+    _action_json: &str,
+    _nonce_ms: u64,
+) -> Result<(String, String, u8)> {
     bail!("hyperliquid::sign_action not yet implemented (add alloy-signer-local dep)")
 }

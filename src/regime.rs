@@ -196,8 +196,15 @@ mod tests {
         let klines = make_ranging_klines(100);
         let analysis = analyze(&klines).unwrap();
         // Oscillating price should give low ADX
-        assert!(analysis.adx < 35.0, "ADX should be low-ish for ranging: {}", analysis.adx);
-        assert!(analysis.grid_suitable, "Grid should be suitable for ranging market");
+        assert!(
+            analysis.adx < 35.0,
+            "ADX should be low-ish for ranging: {}",
+            analysis.adx
+        );
+        assert!(
+            analysis.grid_suitable,
+            "Grid should be suitable for ranging market"
+        );
     }
 
     #[test]

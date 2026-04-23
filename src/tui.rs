@@ -10,15 +10,15 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Row, Table},
-    Terminal,
 };
 use tokio::sync::Mutex;
 
@@ -129,9 +129,9 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),  // header
-                    Constraint::Min(8),     // grid + fills
-                    Constraint::Length(3),  // footer
+                    Constraint::Length(3), // header
+                    Constraint::Min(8),    // grid + fills
+                    Constraint::Length(3), // footer
                 ])
                 .split(f.size());
 
@@ -139,11 +139,25 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
             let mode = if s.dry_run { " [DRY-RUN]" } else { "" };
             let header_text = format!(
                 " {} | Price: {:.2} | Equity: {:.2} | PnL: {:+.2} | Fills: {} | Open: {}{}",
-                s.symbol, s.current_price, s.equity, s.total_pnl, s.total_fills, s.open_orders, mode,
+                s.symbol,
+                s.current_price,
+                s.equity,
+                s.total_pnl,
+                s.total_fills,
+                s.open_orders,
+                mode,
             );
             let header = Paragraph::new(header_text)
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .block(Block::default().borders(Borders::ALL).title(" Trading Bot "));
+                .style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Trading Bot "),
+                );
             f.render_widget(header, chunks[0]);
 
             // Main area: grid on left, fills on right
@@ -153,24 +167,32 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
                 .split(chunks[1]);
 
             // Grid state table
-            let grid_rows: Vec<Row> = s.grid_state.iter().rev().take(20).map(|g| {
-                let style = if g.is_current {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                } else if g.side == "BUY" {
-                    Style::default().fg(Color::Green)
-                } else if g.side == "SELL" {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                Row::new(vec![
-                    format!("{:>3}", g.level),
-                    format!("{:.2}", g.price),
-                    g.side.clone(),
-                    g.status.clone(),
-                ])
-                .style(style)
-            }).collect();
+            let grid_rows: Vec<Row> = s
+                .grid_state
+                .iter()
+                .rev()
+                .take(20)
+                .map(|g| {
+                    let style = if g.is_current {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else if g.side == "BUY" {
+                        Style::default().fg(Color::Green)
+                    } else if g.side == "SELL" {
+                        Style::default().fg(Color::Red)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    Row::new(vec![
+                        format!("{:>3}", g.level),
+                        format!("{:.2}", g.price),
+                        g.side.clone(),
+                        g.status.clone(),
+                    ])
+                    .style(style)
+                })
+                .collect();
             let grid_table = Table::new(
                 grid_rows,
                 [
@@ -180,27 +202,35 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
                     Constraint::Length(8),
                 ],
             )
-            .header(Row::new(vec!["Lvl", "Price", "Side", "Status"])
-                .style(Style::default().add_modifier(Modifier::BOLD)))
+            .header(
+                Row::new(vec!["Lvl", "Price", "Side", "Status"])
+                    .style(Style::default().add_modifier(Modifier::BOLD)),
+            )
             .block(Block::default().borders(Borders::ALL).title(" Grid "));
             f.render_widget(grid_table, main_chunks[0]);
 
             // Recent fills
-            let fill_rows: Vec<Row> = s.recent_fills.iter().rev().take(15).map(|fill| {
-                let style = if fill.side == "BUY" {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::Red)
-                };
-                Row::new(vec![
-                    fill.time.clone(),
-                    fill.side.clone(),
-                    format!("{:.2}", fill.price),
-                    format!("{:.6}", fill.qty),
-                    format!("{:+.4}", fill.pnl),
-                ])
-                .style(style)
-            }).collect();
+            let fill_rows: Vec<Row> = s
+                .recent_fills
+                .iter()
+                .rev()
+                .take(15)
+                .map(|fill| {
+                    let style = if fill.side == "BUY" {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::Red)
+                    };
+                    Row::new(vec![
+                        fill.time.clone(),
+                        fill.side.clone(),
+                        format!("{:.2}", fill.price),
+                        format!("{:.6}", fill.qty),
+                        format!("{:+.4}", fill.pnl),
+                    ])
+                    .style(style)
+                })
+                .collect();
             let fills_table = Table::new(
                 fill_rows,
                 [
@@ -211,14 +241,25 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
                     Constraint::Length(10),
                 ],
             )
-            .header(Row::new(vec!["Time", "Side", "Price", "Qty", "PnL"])
-                .style(Style::default().add_modifier(Modifier::BOLD)))
-            .block(Block::default().borders(Borders::ALL).title(" Recent Fills "));
+            .header(
+                Row::new(vec!["Time", "Side", "Price", "Qty", "PnL"])
+                    .style(Style::default().add_modifier(Modifier::BOLD)),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Recent Fills "),
+            );
             f.render_widget(fills_table, main_chunks[1]);
 
             // Footer
             let mut footer_spans = vec![
-                Span::styled(" q", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " q",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("=quit "),
                 Span::styled("daily", Style::default().fg(Color::Cyan)),
                 Span::raw(format!(": {:+.2} ", s.daily_pnl)),
@@ -245,7 +286,8 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q')
-                    || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     break;
                 }

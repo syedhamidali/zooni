@@ -2,11 +2,11 @@
 //! + retry + circuit breaker + dry-run + graceful shutdown + PnL tracking.
 
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{Datelike, Utc};
 use tokio::sync::Mutex;
 use tokio::time;
@@ -17,7 +17,7 @@ use crate::config::BotConfig;
 use crate::grid::{Grid, LevelOrder, PlannedOrder};
 use crate::metrics::Metrics;
 use crate::persistence::{Db, FillRow, OrderRow, OrderStatus};
-use crate::retry::{with_retry, CircuitBreaker, RetryPolicy};
+use crate::retry::{CircuitBreaker, RetryPolicy, with_retry};
 use crate::risk::{Market, RiskConfig, RiskEngine};
 use crate::telegram::TelegramBot;
 use crate::tui::{GridLevelDisplay, TuiState};
@@ -141,19 +141,18 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                  Total: {:+.2} USDT\n\
                  Fills: {} total ({} buys, {} sells)\n\
                  Avg per fill: {:.4} USDT",
-                tg_symbol2, pnl, fills, buys, sells,
+                tg_symbol2,
+                pnl,
+                fills,
+                buys,
+                sells,
                 if fills > 0 { pnl / fills as f64 } else { 0.0 },
             )
         });
 
         tokio::spawn(async move {
-            tg.poll_loop(
-                tg_kill,
-                Duration::from_secs(5),
-                status_fn,
-                pnl_fn,
-            )
-            .await;
+            tg.poll_loop(tg_kill, Duration::from_secs(5), status_fn, pnl_fn)
+                .await;
         });
         info!("Telegram bot started");
     }
@@ -194,7 +193,11 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         };
         bybit::rest::Client::new(bybit_cfg)
     };
-    info!(testnet = cfg.bybit.testnet, base = client.base_url(), "Bybit REST client ready");
+    info!(
+        testnet = cfg.bybit.testnet,
+        base = client.base_url(),
+        "Bybit REST client ready"
+    );
 
     // -- 7. Clock sync check ---------------------------------------------------
     if !dry_run {
@@ -265,7 +268,11 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         let last_price: f64 = ticker.last_price.parse().context("parse last_price")?;
         let bid: f64 = ticker.bid1_price.parse().unwrap_or(last_price);
         let ask: f64 = ticker.ask1_price.parse().unwrap_or(last_price);
-        let mid = if bid > 0.0 && ask > 0.0 { (bid + ask) / 2.0 } else { last_price };
+        let mid = if bid > 0.0 && ask > 0.0 {
+            (bid + ask) / 2.0
+        } else {
+            last_price
+        };
         info!(symbol = %cfg.grid.symbol, last = last_price, bid, ask, mid, "market snapshot");
 
         let min_qty: f64 = info.lot_size_filter.min_order_qty.parse().unwrap_or(0.0);
@@ -302,20 +309,27 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
     );
 
     if mid < *grid.levels.first().unwrap_or(&0.0) || mid > *grid.levels.last().unwrap_or(&0.0) {
-        warn!(mid, "current price outside grid band — consider reconfiguring");
+        warn!(
+            mid,
+            "current price outside grid band — consider reconfiguring"
+        );
     }
 
     // -- 11. Position reconciliation on startup --------------------------------
     if !dry_run {
         let db_orders = db.lock().await.open_orders(&cfg.grid.symbol)?;
         if !db_orders.is_empty() {
-            info!(count = db_orders.len(), "found persisted orders, reconciling with exchange");
+            info!(
+                count = db_orders.len(),
+                "found persisted orders, reconciling with exchange"
+            );
             let exchange_open = with_retry(&retry_policy, "open_orders_startup", || {
                 client.open_orders_spot(&cfg.grid.symbol)
             })
             .await
             .unwrap_or_default();
-            let exchange_ids: HashSet<String> = exchange_open.iter().map(|o| o.order_id.clone()).collect();
+            let exchange_ids: HashSet<String> =
+                exchange_open.iter().map(|o| o.order_id.clone()).collect();
 
             for dbo in &db_orders {
                 if exchange_ids.contains(&dbo.order_id) {
@@ -332,11 +346,16 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                     info!(level = dbo.level_index, order_id = %dbo.order_id, "restored open order");
                 } else {
                     // Was in DB as open but not on exchange — must have filled while we were down
-                    db.lock().await.mark_filled(&dbo.order_id, dbo.price, dbo.qty)?;
+                    db.lock()
+                        .await
+                        .mark_filled(&dbo.order_id, dbo.price, dbo.qty)?;
                     info!(level = dbo.level_index, order_id = %dbo.order_id, "order filled while offline");
                 }
             }
-            info!(restored = grid.orders.len(), "startup reconciliation complete");
+            info!(
+                restored = grid.orders.len(),
+                "startup reconciliation complete"
+            );
         }
     }
 
@@ -353,10 +372,21 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         let plan = grid.plan_initial(mid);
         info!(plan_size = plan.len(), "placing initial grid");
         for p in &plan {
-            if kill.load(Ordering::SeqCst) { break; }
+            if kill.load(Ordering::SeqCst) {
+                break;
+            }
             place_with_risk(
-                &client, &mut grid, p, &engine, &cfg.grid.symbol,
-                &db, &alerter, &retry_policy, &breaker, dry_run, &metrics,
+                &client,
+                &mut grid,
+                p,
+                &engine,
+                &cfg.grid.symbol,
+                &db,
+                &alerter,
+                &retry_policy,
+                &breaker,
+                dry_run,
+                &metrics,
             )
             .await;
         }
@@ -365,14 +395,28 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         // Fill gaps in the grid that aren't occupied
         let plan = grid.plan_initial(mid);
         let occupied: HashSet<usize> = grid.orders.keys().copied().collect();
-        let gaps: Vec<_> = plan.into_iter().filter(|p| !occupied.contains(&p.level_index)).collect();
+        let gaps: Vec<_> = plan
+            .into_iter()
+            .filter(|p| !occupied.contains(&p.level_index))
+            .collect();
         if !gaps.is_empty() {
             info!(gap_count = gaps.len(), "filling gaps in restored grid");
             for p in &gaps {
-                if kill.load(Ordering::SeqCst) { break; }
+                if kill.load(Ordering::SeqCst) {
+                    break;
+                }
                 place_with_risk(
-                    &client, &mut grid, p, &engine, &cfg.grid.symbol,
-                    &db, &alerter, &retry_policy, &breaker, dry_run, &metrics,
+                    &client,
+                    &mut grid,
+                    p,
+                    &engine,
+                    &cfg.grid.symbol,
+                    &db,
+                    &alerter,
+                    &retry_policy,
+                    &breaker,
+                    dry_run,
+                    &metrics,
                 )
                 .await;
             }
@@ -388,12 +432,18 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         let week_start = (now - chrono::Duration::days(weekday as i64))
             .format("%Y-%m-%d")
             .to_string();
-        let week_end = (now + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let week_end = (now + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
         let weekly = db.lock().await.weekly_pnl(&week_start, &week_end)?;
         let mut guard = engine.lock().await;
         guard.set_daily_pnl(daily);
         guard.set_weekly_pnl(weekly);
-        info!(daily_pnl = daily, weekly_pnl = weekly, "PnL loaded from database");
+        info!(
+            daily_pnl = daily,
+            weekly_pnl = weekly,
+            "PnL loaded from database"
+        );
     }
 
     // -- 15. Main loop ---------------------------------------------------------
@@ -510,15 +560,28 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         {
             let mut series = metrics.series.lock().await;
             series.symbol = cfg.grid.symbol.clone();
-            series.grid_levels = grid.levels.iter().enumerate().map(|(i, &price)| {
-                let (side, status) = if let Some(order) = grid.orders.get(&i) {
-                    let s = match order.side { Side::Buy => "BUY", Side::Sell => "SELL" };
-                    (s.to_string(), "OPEN".to_string())
-                } else {
-                    (String::new(), String::new())
-                };
-                crate::metrics::GridLevel { index: i, price, side, status }
-            }).collect();
+            series.grid_levels = grid
+                .levels
+                .iter()
+                .enumerate()
+                .map(|(i, &price)| {
+                    let (side, status) = if let Some(order) = grid.orders.get(&i) {
+                        let s = match order.side {
+                            Side::Buy => "BUY",
+                            Side::Sell => "SELL",
+                        };
+                        (s.to_string(), "OPEN".to_string())
+                    } else {
+                        (String::new(), String::new())
+                    };
+                    crate::metrics::GridLevel {
+                        index: i,
+                        price,
+                        side,
+                        status,
+                    }
+                })
+                .collect();
         }
 
         // Periodic equity + PnL refresh
@@ -526,9 +589,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
             if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
                 for a in &accounts {
                     for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD")
-                            && !c.wallet_balance.is_empty()
-                        {
+                        if (c.coin == "USDT" || c.coin == "USD") && !c.wallet_balance.is_empty() {
                             if let Ok(bal) = c.wallet_balance.parse::<f64>() {
                                 let mut guard = engine.lock().await;
                                 guard.set_equity(bal);
@@ -548,8 +609,9 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                 let week_start = (now - chrono::Duration::days(weekday as i64))
                     .format("%Y-%m-%d")
                     .to_string();
-                let week_end =
-                    (now + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+                let week_end = (now + chrono::Duration::days(1))
+                    .format("%Y-%m-%d")
+                    .to_string();
                 if let Ok(weekly) = db.lock().await.weekly_pnl(&week_start, &week_end) {
                     let mut guard = engine.lock().await;
                     guard.set_daily_pnl(daily);
@@ -588,27 +650,39 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
             ts.open_orders = grid.orders.len() as u64;
             ts.total_fills = metrics.fills_total.load(Ordering::Relaxed);
             ts.equity = engine.lock().await.equity();
-            ts.total_pnl = db.lock().await.total_realised_pnl(&cfg.grid.symbol).unwrap_or(0.0);
+            ts.total_pnl = db
+                .lock()
+                .await
+                .total_realised_pnl(&cfg.grid.symbol)
+                .unwrap_or(0.0);
             let today_str = Utc::now().format("%Y-%m-%d").to_string();
             ts.daily_pnl = db.lock().await.daily_pnl(&today_str).unwrap_or(0.0);
             ts.circuit_breaker_open = breaker.is_open();
 
             // Update grid level display
-            ts.grid_state = grid.levels.iter().enumerate().map(|(i, &price)| {
-                let (side, status) = if let Some(order) = grid.orders.get(&i) {
-                    let s = match order.side { Side::Buy => "BUY", Side::Sell => "SELL" };
-                    (s.to_string(), "OPEN".to_string())
-                } else {
-                    ("---".to_string(), "---".to_string())
-                };
-                GridLevelDisplay {
-                    level: i,
-                    price,
-                    side,
-                    status,
-                    is_current: false,
-                }
-            }).collect();
+            ts.grid_state = grid
+                .levels
+                .iter()
+                .enumerate()
+                .map(|(i, &price)| {
+                    let (side, status) = if let Some(order) = grid.orders.get(&i) {
+                        let s = match order.side {
+                            Side::Buy => "BUY",
+                            Side::Sell => "SELL",
+                        };
+                        (s.to_string(), "OPEN".to_string())
+                    } else {
+                        ("---".to_string(), "---".to_string())
+                    };
+                    GridLevelDisplay {
+                        level: i,
+                        price,
+                        side,
+                        status,
+                        is_current: false,
+                    }
+                })
+                .collect();
 
             // Mark level closest to current price
             if ts.current_price > 0.0 {
@@ -647,8 +721,8 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                     // If price is within 10% of either edge, rebalance
                     if price < lower + range * 0.10 || price > upper - range * 0.10 {
                         info!(
-                            price, lower, upper,
-                            "price near grid edge — rebalancing grid",
+                            price,
+                            lower, upper, "price near grid edge — rebalancing grid",
                         );
                         // Cancel all and re-place around new mid
                         if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
@@ -675,10 +749,21 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                                 "rebalanced grid",
                             );
                             for p in &plan {
-                                if kill.load(Ordering::SeqCst) { break; }
+                                if kill.load(Ordering::SeqCst) {
+                                    break;
+                                }
                                 place_with_risk(
-                                    &client, &mut grid, p, &engine, &cfg.grid.symbol,
-                                    &db, &alerter, &retry_policy, &breaker, dry_run, &metrics,
+                                    &client,
+                                    &mut grid,
+                                    p,
+                                    &engine,
+                                    &cfg.grid.symbol,
+                                    &db,
+                                    &alerter,
+                                    &retry_policy,
+                                    &breaker,
+                                    dry_run,
+                                    &metrics,
                                 )
                                 .await;
                             }
@@ -697,7 +782,10 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
     }
 
     // -- 16. Graceful shutdown -------------------------------------------------
-    info!("shutdown: waiting {}s for in-flight orders", cfg.bot.shutdown_wait_secs);
+    info!(
+        "shutdown: waiting {}s for in-flight orders",
+        cfg.bot.shutdown_wait_secs
+    );
     tokio::time::sleep(Duration::from_secs(cfg.bot.shutdown_wait_secs)).await;
 
     if !dry_run {
@@ -725,12 +813,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         .total_fill_count(&cfg.grid.symbol)
         .unwrap_or(0);
     let final_equity = engine.lock().await.equity();
-    info!(
-        total_pnl,
-        total_fills,
-        final_equity,
-        "session summary",
-    );
+    info!(total_pnl, total_fills, final_equity, "session summary",);
     alerter
         .lifecycle(&format!(
             "Bot shutdown: PnL={total_pnl:+.2} fills={total_fills} equity={final_equity:.2}"
@@ -781,7 +864,10 @@ async fn place_with_risk(
     let price: f64 = p.price_str.parse().unwrap_or(0.0);
     let qty: f64 = p.qty_str.parse().unwrap_or(0.0);
     if price <= 0.0 || qty <= 0.0 {
-        warn!(level = p.level_index, price, qty, "skipping order with zero price/qty");
+        warn!(
+            level = p.level_index,
+            price, qty, "skipping order with zero price/qty"
+        );
         return;
     }
     let notional = price * qty;
@@ -801,12 +887,20 @@ async fn place_with_risk(
     }
 
     if breaker.is_open() {
-        warn!(level = p.level_index, "circuit breaker open — skipping order placement");
+        warn!(
+            level = p.level_index,
+            "circuit breaker open — skipping order placement"
+        );
         return;
     }
 
     // Generate orderLinkId for deduplication
-    let link_id = format!("grid-{}-{}-{}", symbol, p.level_index, uuid::Uuid::new_v4().as_simple());
+    let link_id = format!(
+        "grid-{}-{}-{}",
+        symbol,
+        p.level_index,
+        uuid::Uuid::new_v4().as_simple()
+    );
 
     if dry_run {
         let fake_id = format!("DRY-{}", uuid::Uuid::new_v4().as_simple());
@@ -853,7 +947,14 @@ async fn place_with_risk(
     let link_id_clone = link_id.clone();
 
     match with_retry(retry_policy, "place_order", || {
-        client.place_spot_order(symbol, side, "Limit", &qty_str, Some(&price_str), Some(&link_id_clone))
+        client.place_spot_order(
+            symbol,
+            side,
+            "Limit",
+            &qty_str,
+            Some(&price_str),
+            Some(&link_id_clone),
+        )
     })
     .await
     {
@@ -901,7 +1002,10 @@ async fn place_with_risk(
             metrics.record_order_failed();
             warn!(level = p.level_index, err = %e, "place order failed after retries");
             alerter
-                .error(&format!("Order placement failed at level {}: {e}", p.level_index))
+                .error(&format!(
+                    "Order placement failed at level {}: {e}",
+                    p.level_index
+                ))
                 .await;
         }
     }
@@ -933,7 +1037,8 @@ async fn reconcile_once(
     let open_ids: HashSet<String> = open.iter().map(|o| o.order_id.clone()).collect();
 
     // Build a map of partial fill info from exchange
-    let mut partial_fills: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut partial_fills: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
     for o in &open {
         if let Ok(cum_qty) = o.cum_exec_qty.parse::<f64>() {
             if cum_qty > 0.0 {
@@ -960,7 +1065,11 @@ async fn reconcile_once(
     });
 
     if !filled.is_empty() {
-        info!(count = filled.len(), open_after = grid.orders.len(), "fills detected");
+        info!(
+            count = filled.len(),
+            open_after = grid.orders.len(),
+            "fills detected"
+        );
     }
 
     for (level, side, notional, order_id, fill_price, fill_qty) in filled {
@@ -973,7 +1082,7 @@ async fn reconcile_once(
         };
         let realised_pnl = match side {
             Side::Sell => grid_spacing * fill_qty, // profit when we sell above where we bought
-            Side::Buy => 0.0,                       // buying is cost, not profit
+            Side::Buy => 0.0,                      // buying is cost, not profit
         };
 
         info!(level, ?side, notional, pnl = realised_pnl, "filled");
@@ -997,20 +1106,32 @@ async fn reconcile_once(
         // Record metrics + dashboard fill entry
         metrics.record_fill(matches!(side, Side::Buy));
         {
-            let side_str = match side { Side::Buy => "BUY", Side::Sell => "SELL" };
-            metrics.series.lock().await.add_fill(crate::metrics::FillEntry {
-                timestamp: chrono::Utc::now().timestamp_millis(),
-                side: side_str.to_string(),
-                price: fill_price,
-                qty: fill_qty,
-                pnl: realised_pnl,
-                order_id: order_id.clone(),
-            });
+            let side_str = match side {
+                Side::Buy => "BUY",
+                Side::Sell => "SELL",
+            };
+            metrics
+                .series
+                .lock()
+                .await
+                .add_fill(crate::metrics::FillEntry {
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    side: side_str.to_string(),
+                    price: fill_price,
+                    qty: fill_qty,
+                    pnl: realised_pnl,
+                    order_id: order_id.clone(),
+                });
         }
 
         // Alert on fill
-        let side_str = match side { Side::Buy => "BUY", Side::Sell => "SELL" };
-        alerter.fill(symbol, side_str, fill_price, fill_qty, realised_pnl).await;
+        let side_str = match side {
+            Side::Buy => "BUY",
+            Side::Sell => "SELL",
+        };
+        alerter
+            .fill(symbol, side_str, fill_price, fill_qty, realised_pnl)
+            .await;
 
         // Release open-order exposure
         {
@@ -1023,7 +1144,17 @@ async fn reconcile_once(
             info!(level, ?side, "regime paused — skipping replacement order");
         } else if let Some(plan) = grid.plan_replacement(level, side) {
             place_with_risk(
-                client, grid, &plan, engine, symbol, db, alerter, retry_policy, breaker, dry_run, metrics,
+                client,
+                grid,
+                &plan,
+                engine,
+                symbol,
+                db,
+                alerter,
+                retry_policy,
+                breaker,
+                dry_run,
+                metrics,
             )
             .await;
         } else {

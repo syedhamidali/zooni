@@ -30,10 +30,10 @@ pub mod instruments {
 
 /// Approximate lot sizes (contract specs — reconfirm against MCX current spec sheet before trading).
 pub mod lot_size {
-    pub const GOLD_KG: u32 = 1;           // 1 kg per GOLD 1kg contract
-    pub const GOLDM_G: u32 = 100;         // 100 g per GOLDM contract
-    pub const SILVER_KG: u32 = 30;        // 30 kg per SILVER contract
-    pub const CRUDEOIL_BBL: u32 = 100;    // 100 barrels per CRUDEOIL contract
+    pub const GOLD_KG: u32 = 1; // 1 kg per GOLD 1kg contract
+    pub const GOLDM_G: u32 = 100; // 100 g per GOLDM contract
+    pub const SILVER_KG: u32 = 30; // 30 kg per SILVER contract
+    pub const CRUDEOIL_BBL: u32 = 100; // 100 barrels per CRUDEOIL contract
     pub const NATURALGAS_MMBTU: u32 = 1250;
 }
 

@@ -28,8 +28,12 @@ impl Session {
             Session::NseEquity | Session::NseFo => {
                 let ist: Tz = chrono_tz::Asia::Kolkata;
                 let t = now.with_timezone(&ist);
-                if !is_weekday(t.weekday()) { return false; }
-                if is_nse_holiday(t.date_naive()) { return false; }
+                if !is_weekday(t.weekday()) {
+                    return false;
+                }
+                if is_nse_holiday(t.date_naive()) {
+                    return false;
+                }
                 let tod = t.time();
                 tod >= NaiveTime::from_hms_opt(9, 15, 0).unwrap()
                     && tod < NaiveTime::from_hms_opt(15, 30, 0).unwrap()
@@ -37,9 +41,13 @@ impl Session {
             Session::Mcx => {
                 let ist: Tz = chrono_tz::Asia::Kolkata;
                 let t = now.with_timezone(&ist);
-                if !is_weekday(t.weekday()) { return false; }
+                if !is_weekday(t.weekday()) {
+                    return false;
+                }
                 // MCX observes its own holiday calendar; overlap with NSE's covers the common ones.
-                if is_nse_holiday(t.date_naive()) { return false; }
+                if is_nse_holiday(t.date_naive()) {
+                    return false;
+                }
                 let tod = t.time();
                 tod >= NaiveTime::from_hms_opt(9, 0, 0).unwrap()
                     && tod < NaiveTime::from_hms_opt(23, 30, 0).unwrap()
@@ -47,8 +55,12 @@ impl Session {
             Session::UsEquity => {
                 let ny: Tz = chrono_tz::America::New_York;
                 let t = now.with_timezone(&ny);
-                if !is_weekday(t.weekday()) { return false; }
-                if is_us_equity_holiday(t.date_naive()) { return false; }
+                if !is_weekday(t.weekday()) {
+                    return false;
+                }
+                if is_us_equity_holiday(t.date_naive()) {
+                    return false;
+                }
                 let tod = t.time();
                 tod >= NaiveTime::from_hms_opt(9, 30, 0).unwrap()
                     && tod < NaiveTime::from_hms_opt(16, 0, 0).unwrap()

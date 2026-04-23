@@ -39,8 +39,8 @@ fn main() -> Result<()> {
 
     // Load or generate price data
     let bars = if let Some(path) = data_path {
-        let csv = std::fs::read_to_string(path)
-            .with_context(|| format!("reading data file {path}"))?;
+        let csv =
+            std::fs::read_to_string(path).with_context(|| format!("reading data file {path}"))?;
         parse_csv(&csv)
     } else {
         let count = synthetic_bars.unwrap_or(5000);
@@ -92,8 +92,10 @@ fn main() -> Result<()> {
                 r.win_rate * 100.0,
             );
         }
-        println!("\nBest config: {} levels, range {:.2}–{:.2}",
-            results[0].0, results[0].1, results[0].2);
+        println!(
+            "\nBest config: {} levels, range {:.2}–{:.2}",
+            results[0].0, results[0].1, results[0].2
+        );
     } else {
         let result = run_backtest(
             &cfg.grid,
@@ -106,7 +108,10 @@ fn main() -> Result<()> {
 
         println!("\n=== BACKTEST RESULTS ===\n");
         println!("  Bars processed:    {}", result.bars_processed);
-        println!("  Total fills:       {} (buy: {}, sell: {})", result.total_fills, result.buy_fills, result.sell_fills);
+        println!(
+            "  Total fills:       {} (buy: {}, sell: {})",
+            result.total_fills, result.buy_fills, result.sell_fills
+        );
         println!("  Total P&L:         {:.2}", result.total_pnl);
         println!("  Final equity:      {:.2}", result.final_equity);
         println!("  Peak equity:       {:.2}", result.peak_equity);
@@ -124,7 +129,10 @@ fn main() -> Result<()> {
         if !result.fills.is_empty() {
             println!("  Last 10 fills:");
             for f in result.fills.iter().rev().take(10).rev() {
-                let side = match f.side { trading_bot::types::Side::Buy => "BUY ", trading_bot::types::Side::Sell => "SELL" };
+                let side = match f.side {
+                    trading_bot::types::Side::Buy => "BUY ",
+                    trading_bot::types::Side::Sell => "SELL",
+                };
                 println!(
                     "    [{:>5}] {} lvl={:<3} price={:<12.2} qty={:<10.6} pnl={:+.4}",
                     f.timestamp, side, f.level, f.price, f.qty, f.pnl,

@@ -27,7 +27,9 @@ pub struct AlertConfig {
     pub pnl_summary_interval_secs: u64,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for AlertConfig {
     fn default() -> Self {
@@ -115,7 +117,9 @@ impl Alerter {
     }
 
     async fn post_webhook(&self, url: &str, text: &str) -> Result<()> {
-        let payload = SlackPayload { text: text.to_string() };
+        let payload = SlackPayload {
+            text: text.to_string(),
+        };
         self.http
             .post(url)
             .json(&payload)
@@ -164,5 +168,65 @@ impl Alerter {
             ),
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_no_webhook() {
+        let cfg = AlertConfig::default();
+        assert!(cfg.webhook_url.is_none());
+        assert!(!cfg.on_fill);
+        assert!(cfg.on_risk_breach);
+        assert!(cfg.on_lifecycle);
+        assert!(cfg.on_error);
+    }
+
+    #[test]
+    fn alerter_disabled_without_webhook() {
+        let alerter = Alerter::new(AlertConfig::default(), "test".to_string());
+        assert!(!alerter.is_enabled());
+    }
+
+    #[test]
+    fn alerter_enabled_with_webhook() {
+        let mut cfg = AlertConfig::default();
+        cfg.webhook_url = Some("https://example.com/hook".to_string());
+        let alerter = Alerter::new(cfg, "test".to_string());
+        assert!(alerter.is_enabled());
+    }
+
+    #[test]
+    fn alert_level_emojis() {
+        assert_eq!(AlertLevel::Info.emoji(), "ℹ️");
+        assert_eq!(AlertLevel::Warning.emoji(), "⚠️");
+        assert_eq!(AlertLevel::Critical.emoji(), "🚨");
+    }
+
+    #[tokio::test]
+    async fn send_noop_without_webhook() {
+        let alerter = Alerter::new(AlertConfig::default(), "test".to_string());
+        // Should not panic or error — just silently skip
+        alerter
+            .send(AlertLevel::Info, "lifecycle", "test message")
+            .await;
+        alerter.fill("BTCUSDT", "BUY", 50000.0, 0.001, 1.5).await;
+        alerter.risk_breach("test breach").await;
+        alerter.error("test error").await;
+    }
+
+    #[tokio::test]
+    async fn send_respects_category_filter() {
+        let mut cfg = AlertConfig::default();
+        cfg.on_fill = false;
+        cfg.webhook_url = Some("https://example.com/hook".to_string());
+        let alerter = Alerter::new(cfg, "test".to_string());
+        // fill category is disabled — should skip without attempting HTTP
+        alerter
+            .send(AlertLevel::Info, "fill", "should be filtered")
+            .await;
     }
 }

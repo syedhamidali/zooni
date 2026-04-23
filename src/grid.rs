@@ -119,7 +119,9 @@ impl Grid {
         let new_level = match filled_side {
             Side::Buy => {
                 let n = filled_level.checked_add(1)?;
-                if n >= self.levels.len() { return None; }
+                if n >= self.levels.len() {
+                    return None;
+                }
                 n
             }
             Side::Sell => filled_level.checked_sub(1)?,
@@ -214,8 +216,12 @@ mod tests {
         let sells: Vec<_> = plan.iter().filter(|p| p.side == Side::Sell).collect();
         assert_eq!(buys.len(), 5);
         assert_eq!(sells.len(), 5);
-        for b in &buys { assert!(g.levels[b.level_index] < 150.0); }
-        for s in &sells { assert!(g.levels[s.level_index] > 150.0); }
+        for b in &buys {
+            assert!(g.levels[b.level_index] < 150.0);
+        }
+        for s in &sells {
+            assert!(g.levels[s.level_index] > 150.0);
+        }
     }
 
     #[test]

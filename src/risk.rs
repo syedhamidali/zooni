@@ -6,8 +6,8 @@
 //! `set_daily_pnl` / `set_equity`. The kill switch is atomic so any task can trip it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RiskConfig {
@@ -50,7 +50,13 @@ pub enum Reject {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Market { Crypto, NseEquity, NseFo, Mcx, UsEquity }
+pub enum Market {
+    Crypto,
+    NseEquity,
+    NseFo,
+    Mcx,
+    UsEquity,
+}
 
 #[derive(Debug)]
 pub struct RiskEngine {
@@ -84,34 +90,46 @@ impl RiskEngine {
         (engine, kill)
     }
 
-    pub fn kill_switch(&self) -> Arc<AtomicBool> { self.kill.clone() }
-    pub fn trip_kill_switch(&self) { self.kill.store(true, Ordering::SeqCst); }
-    pub fn reset_kill_switch(&self) { self.kill.store(false, Ordering::SeqCst); }
+    pub fn kill_switch(&self) -> Arc<AtomicBool> {
+        self.kill.clone()
+    }
+    pub fn trip_kill_switch(&self) {
+        self.kill.store(true, Ordering::SeqCst);
+    }
+    pub fn reset_kill_switch(&self) {
+        self.kill.store(false, Ordering::SeqCst);
+    }
 
     pub fn set_equity(&mut self, equity: f64) {
         self.equity = equity;
-        if equity > self.peak_equity { self.peak_equity = equity; }
+        if equity > self.peak_equity {
+            self.peak_equity = equity;
+        }
     }
 
-    pub fn set_daily_pnl(&mut self, pnl: f64) { self.daily_pnl = pnl; }
-    pub fn set_weekly_pnl(&mut self, pnl: f64) { self.weekly_pnl = pnl; }
+    pub fn set_daily_pnl(&mut self, pnl: f64) {
+        self.daily_pnl = pnl;
+    }
+    pub fn set_weekly_pnl(&mut self, pnl: f64) {
+        self.weekly_pnl = pnl;
+    }
 
     /// Called after a fill. `notional` is the absolute USD-equivalent exposure delta
     /// (+ for opening, − for closing). Markets may use different currencies; caller
     /// normalises to equity currency before calling.
-    pub fn on_fill(
-        &mut self,
-        market: Market,
-        symbol: &str,
-        strategy: &str,
-        notional_delta: f64,
-    ) {
+    pub fn on_fill(&mut self, market: Market, symbol: &str, strategy: &str, notional_delta: f64) {
         self.exposure_total = (self.exposure_total + notional_delta).max(0.0);
         let m = self.exposure_market.entry(market).or_insert(0.0);
         *m = (*m + notional_delta).max(0.0);
-        let s = self.exposure_symbol.entry(symbol.to_string()).or_insert(0.0);
+        let s = self
+            .exposure_symbol
+            .entry(symbol.to_string())
+            .or_insert(0.0);
         *s = (*s + notional_delta).max(0.0);
-        let st = self.exposure_strategy.entry(strategy.to_string()).or_insert(0.0);
+        let st = self
+            .exposure_strategy
+            .entry(strategy.to_string())
+            .or_insert(0.0);
         *st = (*st + notional_delta).max(0.0);
     }
 
@@ -122,8 +140,12 @@ impl RiskEngine {
         strategy: &str,
         notional: f64,
     ) -> Result<(), Reject> {
-        if self.kill.load(Ordering::SeqCst) { return Err(Reject::KillSwitchTripped); }
-        if self.equity <= 0.0 { return Err(Reject::NoEquity); }
+        if self.kill.load(Ordering::SeqCst) {
+            return Err(Reject::KillSwitchTripped);
+        }
+        if self.equity <= 0.0 {
+            return Err(Reject::NoEquity);
+        }
 
         if self.daily_pnl <= -self.cfg.daily_loss_limit * self.equity {
             return Err(Reject::DailyLossLimit);
@@ -133,30 +155,46 @@ impl RiskEngine {
         }
         if self.peak_equity > 0.0 {
             let dd = (self.peak_equity - self.equity) / self.peak_equity;
-            if dd >= self.cfg.max_drawdown { return Err(Reject::DrawdownLimit); }
+            if dd >= self.cfg.max_drawdown {
+                return Err(Reject::DrawdownLimit);
+            }
         }
 
         let cap_total = self.cfg.max_total_exposure * self.equity;
-        if self.exposure_total + notional > cap_total { return Err(Reject::ExceedsTotalExposure); }
+        if self.exposure_total + notional > cap_total {
+            return Err(Reject::ExceedsTotalExposure);
+        }
 
         let cap_market = self.cfg.max_per_market * self.equity;
         let cur_market = *self.exposure_market.get(&market).unwrap_or(&0.0);
-        if cur_market + notional > cap_market { return Err(Reject::ExceedsMarketExposure); }
+        if cur_market + notional > cap_market {
+            return Err(Reject::ExceedsMarketExposure);
+        }
 
         let cap_symbol = self.cfg.max_per_symbol * self.equity;
         let cur_symbol = *self.exposure_symbol.get(symbol).unwrap_or(&0.0);
-        if cur_symbol + notional > cap_symbol { return Err(Reject::ExceedsSymbolExposure); }
+        if cur_symbol + notional > cap_symbol {
+            return Err(Reject::ExceedsSymbolExposure);
+        }
 
         let cap_strategy = self.cfg.max_per_strategy * self.equity;
         let cur_strategy = *self.exposure_strategy.get(strategy).unwrap_or(&0.0);
-        if cur_strategy + notional > cap_strategy { return Err(Reject::ExceedsStrategyExposure); }
+        if cur_strategy + notional > cap_strategy {
+            return Err(Reject::ExceedsStrategyExposure);
+        }
 
         Ok(())
     }
 
-    pub fn equity(&self) -> f64 { self.equity }
-    pub fn daily_pnl(&self) -> f64 { self.daily_pnl }
-    pub fn exposure_total(&self) -> f64 { self.exposure_total }
+    pub fn equity(&self) -> f64 {
+        self.equity
+    }
+    pub fn daily_pnl(&self) -> f64 {
+        self.daily_pnl
+    }
+    pub fn exposure_total(&self) -> f64 {
+        self.exposure_total
+    }
 }
 
 #[cfg(test)]
@@ -171,7 +209,10 @@ mod tests {
     fn accepts_trade_within_limits() {
         let e = engine(10_000.0);
         // 20% symbol limit = 2000; 15% strategy = 1500. Notional 1000 is under both.
-        assert_eq!(e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 1000.0), Ok(()));
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 1000.0),
+            Ok(())
+        );
     }
 
     #[test]

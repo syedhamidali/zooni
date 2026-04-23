@@ -7,13 +7,13 @@
 //!   /metrics    — Prometheus format
 //!   /api/live   — full live data for dashboard (JSON)
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+use axum::Router;
 use axum::extract::State;
 use axum::response::{Html, Json};
 use axum::routing::get;
-use axum::Router;
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -105,7 +105,8 @@ impl DashboardSeries {
         let ts = chrono::Utc::now().timestamp_millis();
         self.equity_history.push((ts, equity));
         if self.equity_history.len() > 1000 {
-            self.equity_history.drain(..self.equity_history.len() - 1000);
+            self.equity_history
+                .drain(..self.equity_history.len() - 1000);
         }
     }
 

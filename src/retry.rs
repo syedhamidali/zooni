@@ -68,7 +68,9 @@ fn simple_rand() -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     // xorshift-style mixing
-    let mut x = n.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut x = n
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58476d1ce4e5b9);
     x ^= x >> 27;
@@ -136,5 +138,78 @@ impl CircuitBreaker {
 
     pub fn failure_count(&self) -> u32 {
         self.consecutive_failures.load(Ordering::Relaxed) as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circuit_breaker_stays_closed_under_threshold() {
+        let cb = CircuitBreaker::new(3, Duration::from_secs(60));
+        cb.record_failure();
+        cb.record_failure();
+        assert!(!cb.is_open());
+        assert_eq!(cb.failure_count(), 2);
+    }
+
+    #[test]
+    fn circuit_breaker_opens_at_threshold() {
+        let cb = CircuitBreaker::new(3, Duration::from_secs(60));
+        cb.record_failure();
+        cb.record_failure();
+        cb.record_failure();
+        assert!(cb.is_open());
+    }
+
+    #[test]
+    fn circuit_breaker_resets_on_success() {
+        let cb = CircuitBreaker::new(3, Duration::from_secs(60));
+        cb.record_failure();
+        cb.record_failure();
+        cb.record_success();
+        assert_eq!(cb.failure_count(), 0);
+        assert!(!cb.is_open());
+    }
+
+    #[test]
+    fn backoff_increases_exponentially() {
+        let d0 = backoff_delay(0, Duration::from_millis(100), Duration::from_secs(10));
+        let d1 = backoff_delay(1, Duration::from_millis(100), Duration::from_secs(10));
+        let d2 = backoff_delay(2, Duration::from_millis(100), Duration::from_secs(10));
+        // d1 should be roughly 2x d0, d2 roughly 4x d0 (with jitter)
+        assert!(d1 > d0, "d1={:?} should be > d0={:?}", d1, d0);
+        assert!(d2 > d1, "d2={:?} should be > d1={:?}", d2, d1);
+    }
+
+    #[test]
+    fn backoff_respects_max() {
+        let d = backoff_delay(20, Duration::from_millis(100), Duration::from_secs(5));
+        assert!(d <= Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn retry_succeeds_on_first_try() {
+        let policy = RetryPolicy {
+            max_retries: 3,
+            ..Default::default()
+        };
+        let result = with_retry(&policy, "test", || async { Ok::<_, anyhow::Error>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn retry_fails_after_max() {
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+        };
+        let result = with_retry(&policy, "test", || async {
+            Err::<i32, _>(anyhow::anyhow!("always fails"))
+        })
+        .await;
+        assert!(result.is_err());
     }
 }

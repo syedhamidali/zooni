@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::types::Side;
 
@@ -178,12 +178,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn mark_filled(
-        &self,
-        order_id: &str,
-        filled_price: f64,
-        filled_qty: f64,
-    ) -> Result<()> {
+    pub fn mark_filled(&self, order_id: &str, filled_price: f64, filled_qty: f64) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn
             .execute(
@@ -219,7 +214,11 @@ impl Db {
                     order_id: row.get(0)?,
                     order_link_id: row.get(1)?,
                     symbol: row.get(2)?,
-                    side: if side_str == "buy" { Side::Buy } else { Side::Sell },
+                    side: if side_str == "buy" {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    },
                     price: row.get(4)?,
                     qty: row.get(5)?,
                     level_index: row.get::<_, i64>(6)? as usize,
@@ -330,13 +329,11 @@ impl Db {
     }
 
     pub fn get_state(&self, key: &str) -> Result<Option<String>> {
-        let result = self
-            .conn
-            .query_row(
-                "SELECT value FROM bot_state WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            );
+        let result = self.conn.query_row(
+            "SELECT value FROM bot_state WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        );
         match result {
             Ok(v) => Ok(Some(v)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

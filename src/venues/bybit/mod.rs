@@ -39,6 +39,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { credentials: None, testnet: false, recv_window_ms: 5_000 }
+        Self {
+            credentials: None,
+            testnet: false,
+            recv_window_ms: 5_000,
+        }
     }
 }

@@ -2077,7 +2077,7 @@ dependencies = [
 
 [[package]]
 name = "trading-bot"
-version = "0.2.0"
+version = "2026.4.23"
 dependencies = [
  "anyhow",
  "axum",

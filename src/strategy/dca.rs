@@ -82,3 +82,63 @@ impl Strategy for DcaStrategy {
         Ok(vec![])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap(price: f64) -> MarketSnapshot {
+        MarketSnapshot {
+            symbol: "BTCUSDT".to_string(),
+            bid: price - 1.0,
+            ask: price + 1.0,
+            last: price,
+            volume_24h: 1000.0,
+        }
+    }
+
+    #[test]
+    fn buys_at_correct_interval() {
+        let mut dca = DcaStrategy::new("BTCUSDT".to_string(), 100.0, 3);
+        let s = snap(50000.0);
+
+        // Ticks 1 and 2 — no action
+        let actions = dca.on_tick(&s, &[]).unwrap();
+        assert!(matches!(actions[0], StrategyAction::None));
+        let actions = dca.on_tick(&s, &[]).unwrap();
+        assert!(matches!(actions[0], StrategyAction::None));
+
+        // Tick 3 — should place a buy
+        let actions = dca.on_tick(&s, &[]).unwrap();
+        match &actions[0] {
+            StrategyAction::PlaceOrder { side, qty, .. } => {
+                assert_eq!(*side, Side::Buy);
+                assert!((qty - 0.002).abs() < 0.0001); // 100/50000
+            }
+            other => panic!("expected PlaceOrder, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tracks_fills() {
+        let mut dca = DcaStrategy::new("BTCUSDT".to_string(), 100.0, 1);
+        let s = snap(50000.0);
+
+        let fill = FillEvent {
+            order_id: "123".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Buy,
+            price: 50000.0,
+            qty: 0.002,
+        };
+        let _ = dca.on_tick(&s, &[fill]).unwrap();
+        let _ = dca.on_shutdown().unwrap();
+        // Just verify it doesn't panic — the shutdown logs the summary
+    }
+
+    #[test]
+    fn name_is_dca() {
+        let dca = DcaStrategy::new("X".to_string(), 1.0, 1);
+        assert_eq!(dca.name(), "dca");
+    }
+}
