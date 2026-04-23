@@ -212,4 +212,93 @@ mod tests {
         let klines = make_ranging_klines(10);
         assert!(analyze(&klines).is_none());
     }
+
+    #[test]
+    fn classify_volatile_when_high_vol() {
+        let (regime, conf) = classify(15.0, 50.0, 0.05, 6.0);
+        assert_eq!(regime, Regime::Volatile);
+        assert!(conf >= 0.5);
+    }
+
+    #[test]
+    fn classify_volatile_when_wide_bandwidth() {
+        let (regime, _) = classify(15.0, 50.0, 0.25, 2.0);
+        assert_eq!(regime, Regime::Volatile);
+    }
+
+    #[test]
+    fn classify_trending_up_strong_adx_bullish_rsi() {
+        let (regime, _) = classify(35.0, 65.0, 0.05, 2.0);
+        assert_eq!(regime, Regime::TrendingUp);
+    }
+
+    #[test]
+    fn classify_trending_down_strong_adx_bearish_rsi() {
+        let (regime, _) = classify(35.0, 35.0, 0.05, 2.0);
+        assert_eq!(regime, Regime::TrendingDown);
+    }
+
+    #[test]
+    fn classify_ranging_low_adx() {
+        let (regime, conf) = classify(15.0, 50.0, 0.03, 1.5);
+        assert_eq!(regime, Regime::Ranging);
+        assert!(conf >= 0.5);
+    }
+
+    #[test]
+    fn classify_borderline_adx_narrow_bb() {
+        let (regime, _) = classify(22.0, 50.0, 0.03, 1.5);
+        assert_eq!(regime, Regime::Ranging);
+    }
+
+    #[test]
+    fn classify_borderline_adx_bullish() {
+        let (regime, _) = classify(22.0, 60.0, 0.06, 1.5);
+        assert_eq!(regime, Regime::TrendingUp);
+    }
+
+    #[test]
+    fn classify_borderline_adx_bearish() {
+        let (regime, _) = classify(22.0, 40.0, 0.06, 1.5);
+        assert_eq!(regime, Regime::TrendingDown);
+    }
+
+    #[test]
+    fn regime_display() {
+        assert_eq!(Regime::Ranging.to_string(), "RANGING");
+        assert_eq!(Regime::TrendingUp.to_string(), "TRENDING_UP");
+        assert_eq!(Regime::TrendingDown.to_string(), "TRENDING_DOWN");
+        assert_eq!(Regime::Volatile.to_string(), "VOLATILE");
+    }
+
+    #[test]
+    fn grid_not_suitable_for_trending_down() {
+        // Build strongly trending-down klines
+        let klines: Vec<Kline> = (0..100)
+            .map(|i| {
+                let base = 200.0 - i as f64 * 1.5;
+                Kline {
+                    timestamp: i as u64 * 60000,
+                    open: base + 0.5,
+                    high: base + 1.0,
+                    low: base - 0.5,
+                    close: base,
+                    volume: 1000.0,
+                }
+            })
+            .collect();
+        let analysis = analyze(&klines).unwrap();
+        if analysis.regime == Regime::TrendingDown {
+            assert!(!analysis.grid_suitable);
+        }
+    }
+
+    #[test]
+    fn suggested_levels_clamped() {
+        let klines = make_ranging_klines(100);
+        let analysis = analyze(&klines).unwrap();
+        if let Some(levels) = analysis.suggested_levels {
+            assert!((5..=50).contains(&levels), "levels out of range: {levels}");
+        }
+    }
 }

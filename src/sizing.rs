@@ -187,4 +187,46 @@ mod tests {
         assert!(new < 0.20, "Should decrease on loss: {}", new);
         assert!(new >= 0.02, "Should not go below min: {}", new);
     }
+
+    #[test]
+    fn kelly_edge_cases() {
+        assert_eq!(kelly_fraction(0.0, 1.0, 1.0), 0.0); // zero win rate
+        assert_eq!(kelly_fraction(1.0, 1.0, 1.0), 0.0); // 100% win rate (edge case in formula)
+        assert_eq!(kelly_fraction(0.5, 1.0, 0.0), 0.0); // zero avg loss
+    }
+
+    #[test]
+    fn kelly_high_edge_high_fraction() {
+        // 80% win, 2:1 payoff → Kelly = (2*0.8 - 0.2)/2 = 0.7
+        let k = kelly_fraction(0.8, 2.0, 1.0);
+        assert!((k - 0.7).abs() < 0.01, "High edge Kelly: {k}");
+    }
+
+    #[test]
+    fn performance_adjustment_flat_no_change() {
+        // PnL within [-1%, +1%] → no adjustment
+        let new = adjust_for_performance(0.20, 50.0, 10000.0, 0.40);
+        assert!(
+            (new - 0.20).abs() < 0.01,
+            "Flat should not change much: {new}"
+        );
+    }
+
+    #[test]
+    fn performance_adjustment_zero_equity() {
+        let new = adjust_for_performance(0.20, -500.0, 0.0, 0.40);
+        assert!((new - 0.20).abs() < 1e-9, "Zero equity → no change");
+    }
+
+    #[test]
+    fn performance_adjustment_respects_max() {
+        let new = adjust_for_performance(0.39, 5000.0, 10000.0, 0.40);
+        assert!(new <= 0.40, "Should not exceed max fraction: {new}");
+    }
+
+    #[test]
+    fn performance_adjustment_respects_min() {
+        let new = adjust_for_performance(0.03, -5000.0, 10000.0, 0.40);
+        assert!(new >= 0.02, "Should not go below min: {new}");
+    }
 }

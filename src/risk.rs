@@ -255,4 +255,108 @@ mod tests {
             Err(Reject::ExceedsSymbolExposure),
         );
     }
+
+    #[test]
+    fn rejects_zero_equity() {
+        let e = engine(0.0);
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::NoEquity),
+        );
+    }
+
+    #[test]
+    fn rejects_weekly_loss_limit() {
+        let mut e = engine(10_000.0);
+        e.set_weekly_pnl(-1100.0); // -11%, past 10% weekly limit
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::WeeklyLossLimit),
+        );
+    }
+
+    #[test]
+    fn rejects_drawdown_limit() {
+        let mut e = engine(10_000.0);
+        // Peak is 10k, current drops to 8400 → 16% drawdown, past 15% limit
+        e.set_equity(8400.0);
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::DrawdownLimit),
+        );
+    }
+
+    #[test]
+    fn rejects_total_exposure_limit() {
+        let mut e = engine(10_000.0);
+        // 80% total cap = 8000. Fill 7500 then try 600 more.
+        e.on_fill(Market::Crypto, "BTCUSDT", "grid", 7500.0);
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "ETHUSDT", "grid", 600.0),
+            Err(Reject::ExceedsTotalExposure),
+        );
+    }
+
+    #[test]
+    fn rejects_market_exposure_limit() {
+        let mut e = engine(10_000.0);
+        // 40% market cap = 4000
+        e.on_fill(Market::Crypto, "BTCUSDT", "grid", 2000.0);
+        e.on_fill(Market::Crypto, "ETHUSDT", "grid", 1800.0);
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "SOLUSDT", "grid", 300.0),
+            Err(Reject::ExceedsMarketExposure),
+        );
+    }
+
+    #[test]
+    fn rejects_strategy_exposure_limit() {
+        let mut e = engine(10_000.0);
+        // 15% strategy cap = 1500
+        e.on_fill(Market::Crypto, "BTCUSDT", "aggressive", 1400.0);
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "ETHUSDT", "aggressive", 200.0),
+            Err(Reject::ExceedsStrategyExposure),
+        );
+    }
+
+    #[test]
+    fn closing_fill_reduces_exposure() {
+        let mut e = engine(10_000.0);
+        e.on_fill(Market::Crypto, "BTCUSDT", "grid", 1500.0);
+        e.on_fill(Market::Crypto, "BTCUSDT", "grid", -1000.0); // close part
+        // Symbol exposure: 500, strategy exposure: 500
+        // Strategy cap is 15% = 1500, so 900 more is fine (500+900=1400 < 1500)
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 900.0),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn kill_switch_reset_allows_trading() {
+        let e = engine(10_000.0);
+        e.trip_kill_switch();
+        assert!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0)
+                .is_err()
+        );
+        e.reset_kill_switch();
+        assert!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn peak_equity_tracks_high_water_mark() {
+        let mut e = engine(10_000.0);
+        e.set_equity(12_000.0);
+        e.set_equity(10_000.0);
+        // Peak is 12k, current 10k → 16.7% drawdown → should reject
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::DrawdownLimit),
+        );
+    }
 }
