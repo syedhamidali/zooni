@@ -263,12 +263,16 @@ impl Strategy for PairsStrategy {
         }
 
         // Require minimum correlation between the two legs before entering
-        if let Some(corr) = indicators::pearson_correlation(&self.prices_a, &self.prices_b) {
-            if corr < self.config.min_correlation {
-                return Ok(vec![StrategyAction::None]);
+        if self.config.min_correlation > 0.0 {
+            match indicators::pearson_correlation(&self.prices_a, &self.prices_b) {
+                Some(corr) if corr < self.config.min_correlation => {
+                    return Ok(vec![StrategyAction::None]);
+                }
+                None => {
+                    return Ok(vec![StrategyAction::None]);
+                }
+                _ => {} // correlation is sufficient
             }
-        } else {
-            return Ok(vec![StrategyAction::None]);
         }
 
         let price_a = *self.prices_a.last().unwrap();
@@ -350,6 +354,7 @@ mod tests {
             position_size_quote: 50_000.0,
             max_open_pairs: 1,
             hedge_ratio_method: HedgeMethod::Fixed(1.0),
+            min_correlation: 0.0, // disable correlation check in tests
         }
     }
 

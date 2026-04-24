@@ -132,6 +132,8 @@ mod tests {
             order_id: "OLD-1".into(),
             submitted_at: Instant::now() - Duration::from_secs(10),
             timeout: Duration::from_secs(5),
+            target_qty: 0.0,
+            filled_qty: 0.0,
         });
         mgr.track("NEW-1".into());
 
@@ -159,6 +161,8 @@ mod tests {
             order_id: "FAST-1".into(),
             submitted_at: Instant::now() - Duration::from_millis(200),
             timeout: Duration::from_millis(100),
+            target_qty: 0.0,
+            filled_qty: 0.0,
         });
 
         let expired = mgr.expired_orders();
