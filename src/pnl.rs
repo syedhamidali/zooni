@@ -191,6 +191,72 @@ impl PnlTracker {
     }
 }
 
+// -- Risk-adjusted return metrics --------------------------------------------
+
+/// Rolling annualized Sharpe ratio from a slice of periodic returns.
+/// Uses 252 trading days annualization. Returns None if fewer than 10 data points.
+pub fn sharpe_ratio(returns: &[f64]) -> Option<f64> {
+    if returns.len() < 10 {
+        return None;
+    }
+    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+    let std_dev = variance.sqrt();
+    if std_dev == 0.0 {
+        return None;
+    }
+    Some(mean / std_dev * 252_f64.sqrt())
+}
+
+/// Sortino ratio — like Sharpe but only penalizes downside volatility.
+pub fn sortino_ratio(returns: &[f64]) -> Option<f64> {
+    if returns.len() < 10 {
+        return None;
+    }
+    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+    let downside_variance = returns
+        .iter()
+        .filter(|&&r| r < 0.0)
+        .map(|r| r.powi(2))
+        .sum::<f64>()
+        / returns.len() as f64;
+    let downside_dev = downside_variance.sqrt();
+    if downside_dev == 0.0 {
+        return None;
+    }
+    Some(mean / downside_dev * 252_f64.sqrt())
+}
+
+/// Maximum drawdown as a fraction (0.0–1.0) from an equity curve.
+pub fn max_drawdown(equity_curve: &[f64]) -> f64 {
+    if equity_curve.is_empty() {
+        return 0.0;
+    }
+    let mut peak = equity_curve[0];
+    let mut max_dd = 0.0_f64;
+    for &eq in equity_curve {
+        if eq > peak {
+            peak = eq;
+        }
+        if peak > 0.0 {
+            let dd = (peak - eq) / peak;
+            if dd > max_dd {
+                max_dd = dd;
+            }
+        }
+    }
+    max_dd
+}
+
+/// Win rate: fraction of profitable trades.
+pub fn win_rate(pnls: &[f64]) -> f64 {
+    if pnls.is_empty() {
+        return 0.0;
+    }
+    let winners = pnls.iter().filter(|&&p| p > 0.0).count();
+    winners as f64 / pnls.len() as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +411,92 @@ mod tests {
     fn custom_fee_rate() {
         let t = PnlTracker::with_fee_rate(0.0005);
         assert!((t.fee_rate() - 0.0005).abs() < 1e-9);
+    }
+
+    // -- Risk metric tests ----------------------------------------------------
+
+    #[test]
+    fn sharpe_ratio_insufficient_data() {
+        let returns = vec![0.01, 0.02, -0.01]; // fewer than 10
+        assert_eq!(sharpe_ratio(&returns), None);
+    }
+
+    #[test]
+    fn sharpe_ratio_positive_returns() {
+        // Strictly increasing returns → std_dev > 0 → Sharpe is Some and positive
+        let returns: Vec<f64> = (0..10).map(|i| 0.001 * (i + 1) as f64).collect();
+        let sr = sharpe_ratio(&returns);
+        assert!(sr.is_some(), "varied returns → Some");
+        assert!(sr.unwrap() > 0.0, "positive mean → positive Sharpe");
+    }
+
+    #[test]
+    fn sharpe_ratio_mixed_returns() {
+        let returns: Vec<f64> = (0..20)
+            .map(|i| if i % 2 == 0 { 0.02 } else { -0.01 })
+            .collect();
+        let sr = sharpe_ratio(&returns);
+        assert!(sr.is_some());
+        // mean = 0.005, std_dev > 0, annualised > 0
+        assert!(sr.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn sortino_ratio_insufficient_data() {
+        let returns = vec![0.01; 5];
+        assert_eq!(sortino_ratio(&returns), None);
+    }
+
+    #[test]
+    fn sortino_ratio_no_downside() {
+        // all non-negative → downside_dev = 0 → None
+        let returns = vec![0.01_f64; 10];
+        assert_eq!(sortino_ratio(&returns), None);
+    }
+
+    #[test]
+    fn sortino_ratio_with_losses() {
+        let returns: Vec<f64> = (0..20)
+            .map(|i| if i % 3 == 0 { -0.02 } else { 0.03 })
+            .collect();
+        let sor = sortino_ratio(&returns);
+        assert!(sor.is_some());
+        assert!(sor.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn max_drawdown_empty() {
+        assert_eq!(max_drawdown(&[]), 0.0);
+    }
+
+    #[test]
+    fn max_drawdown_no_drawdown() {
+        let curve = vec![100.0, 110.0, 120.0, 130.0];
+        assert!((max_drawdown(&curve)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn max_drawdown_simple() {
+        // Peak at 100, drops to 80 → 20% drawdown
+        let curve = vec![100.0, 90.0, 80.0, 95.0];
+        let dd = max_drawdown(&curve);
+        assert!((dd - 0.20).abs() < 1e-9, "expected 0.20, got {dd}");
+    }
+
+    #[test]
+    fn win_rate_empty() {
+        assert_eq!(win_rate(&[]), 0.0);
+    }
+
+    #[test]
+    fn win_rate_all_winners() {
+        let pnls = vec![1.0, 2.0, 3.0];
+        assert!((win_rate(&pnls) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn win_rate_half() {
+        let pnls = vec![1.0, -1.0, 2.0, -2.0];
+        assert!((win_rate(&pnls) - 0.5).abs() < 1e-9);
     }
 }
