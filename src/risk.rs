@@ -171,10 +171,7 @@ impl RiskEngine {
         *st = (*st + notional_delta).max(0.0);
 
         // Track position qty for mark-price revaluation
-        let pq = self
-            .position_qty
-            .entry(symbol.to_string())
-            .or_insert(0.0);
+        let pq = self.position_qty.entry(symbol.to_string()).or_insert(0.0);
         *pq = (*pq + notional_delta).max(0.0);
     }
 

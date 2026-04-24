@@ -198,7 +198,12 @@ impl MomentumStrategy {
             return;
         }
 
-        let adx_result = indicators::adx(&self.high_history, &self.low_history, &self.price_history, 14);
+        let adx_result = indicators::adx(
+            &self.high_history,
+            &self.low_history,
+            &self.price_history,
+            14,
+        );
         let adx_val = adx_result.map(|(adx, _, _)| adx).unwrap_or(0.0);
         let raw_momentum = adx_val > 25.0;
 
