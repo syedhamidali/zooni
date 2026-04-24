@@ -1,6 +1,6 @@
 # Zooni
 
-Zooni is an autonomous algorithmic trading bot built in Rust. It runs grid trading strategies on cryptocurrency exchanges, with built-in market intelligence to pick symbols, size positions, and switch between opportunities automatically.
+Zooni is an autonomous algorithmic trading bot built in Rust. It runs multiple trading strategies across crypto and Indian equity markets, with built-in market intelligence, tax awareness, and risk management to trade profitably without human intervention.
 
 ## What Zooni Does
 
@@ -8,8 +8,10 @@ Zooni is an autonomous algorithmic trading bot built in Rust. It runs grid tradi
 2. **Picks the best symbols** by scanning all available pairs and ranking them by grid-trading suitability
 3. **Deploys grid orders** — layered buy and sell limit orders that capture profit from price oscillations
 4. **Runs funding rate arbitrage** — delta-neutral carry trades that collect perpetual funding payments (long spot + short perp)
-5. **Manages risk** with per-symbol exposure caps, daily/weekly loss limits, max drawdown protection, and a kill switch
-6. **Monitors and adapts** — periodically re-scans the market and switches to better opportunities when they appear
+5. **Trades pairs** — statistical arbitrage on correlated stocks (e.g., HDFC/ICICI), profiting from spread reversion while staying market-neutral
+6. **Follows momentum** — EMA crossover in trends, Bollinger Band reversion in ranges, with automatic regime switching
+7. **Manages risk** with per-symbol exposure caps, daily/weekly loss limits, max drawdown protection, consecutive-loss circuit breaker, and a kill switch
+8. **Monitors and adapts** — periodically re-scans the market and switches to better opportunities when they appear
 
 ## Key Properties
 

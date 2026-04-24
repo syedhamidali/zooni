@@ -67,6 +67,76 @@ impl Session {
             }
         }
     }
+
+    /// Returns `true` when an intraday position should be force-closed
+    /// (15 minutes before session close).
+    pub fn should_exit_intraday<T: TimeZone>(self, now: chrono::DateTime<T>) -> bool {
+        match self {
+            Session::Crypto => false,
+            Session::NseEquity | Session::NseFo => {
+                let ist: Tz = chrono_tz::Asia::Kolkata;
+                let t = now.with_timezone(&ist);
+                let tod = t.time();
+                // 15 min before 15:30 close => >= 15:15
+                tod >= NaiveTime::from_hms_opt(15, 15, 0).unwrap()
+                    && tod < NaiveTime::from_hms_opt(15, 30, 0).unwrap()
+            }
+            Session::Mcx => {
+                let ist: Tz = chrono_tz::Asia::Kolkata;
+                let t = now.with_timezone(&ist);
+                let tod = t.time();
+                // 15 min before 23:30 close => >= 23:15
+                tod >= NaiveTime::from_hms_opt(23, 15, 0).unwrap()
+                    && tod < NaiveTime::from_hms_opt(23, 30, 0).unwrap()
+            }
+            Session::UsEquity => {
+                let ny: Tz = chrono_tz::America::New_York;
+                let t = now.with_timezone(&ny);
+                let tod = t.time();
+                // 15 min before 16:00 close => >= 15:45
+                tod >= NaiveTime::from_hms_opt(15, 45, 0).unwrap()
+                    && tod < NaiveTime::from_hms_opt(16, 0, 0).unwrap()
+            }
+        }
+    }
+
+    /// Minutes remaining until session close, or `None` if the session is
+    /// closed or 24/7 (Crypto).
+    pub fn minutes_until_close<T: TimeZone>(self, now: chrono::DateTime<T>) -> Option<i64> {
+        match self {
+            Session::Crypto => None,
+            Session::NseEquity | Session::NseFo => {
+                if !self.is_open_at(now.clone()) {
+                    return None;
+                }
+                let ist: Tz = chrono_tz::Asia::Kolkata;
+                let t = now.with_timezone(&ist);
+                let close = NaiveTime::from_hms_opt(15, 30, 0).unwrap();
+                let diff = close - t.time();
+                Some(diff.num_minutes())
+            }
+            Session::Mcx => {
+                if !self.is_open_at(now.clone()) {
+                    return None;
+                }
+                let ist: Tz = chrono_tz::Asia::Kolkata;
+                let t = now.with_timezone(&ist);
+                let close = NaiveTime::from_hms_opt(23, 30, 0).unwrap();
+                let diff = close - t.time();
+                Some(diff.num_minutes())
+            }
+            Session::UsEquity => {
+                if !self.is_open_at(now.clone()) {
+                    return None;
+                }
+                let ny: Tz = chrono_tz::America::New_York;
+                let t = now.with_timezone(&ny);
+                let close = NaiveTime::from_hms_opt(16, 0, 0).unwrap();
+                let diff = close - t.time();
+                Some(diff.num_minutes())
+            }
+        }
+    }
 }
 
 fn is_weekday(w: Weekday) -> bool {
@@ -153,5 +223,52 @@ mod tests {
     fn crypto_always_open() {
         let t = Kolkata.with_ymd_and_hms(2026, 1, 1, 3, 0, 0).unwrap();
         assert!(Session::Crypto.is_open_at(t));
+    }
+
+    // --- Time-based exit tests ---
+
+    #[test]
+    fn nse_should_exit_at_1520_ist() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 15, 20, 0).unwrap();
+        assert!(Session::NseEquity.should_exit_intraday(t));
+    }
+
+    #[test]
+    fn nse_should_not_exit_at_1400_ist() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
+        assert!(!Session::NseEquity.should_exit_intraday(t));
+    }
+
+    #[test]
+    fn crypto_never_forces_exit() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 15, 20, 0).unwrap();
+        assert!(!Session::Crypto.should_exit_intraday(t));
+        let t2 = Kolkata.with_ymd_and_hms(2026, 4, 23, 23, 59, 0).unwrap();
+        assert!(!Session::Crypto.should_exit_intraday(t2));
+    }
+
+    #[test]
+    fn us_should_exit_at_1550_et() {
+        let ny: chrono_tz::Tz = chrono_tz::America::New_York;
+        let t = ny.with_ymd_and_hms(2026, 4, 23, 15, 50, 0).unwrap();
+        assert!(Session::UsEquity.should_exit_intraday(t));
+    }
+
+    #[test]
+    fn minutes_until_close_nse_1400() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
+        assert_eq!(Session::NseEquity.minutes_until_close(t), Some(90));
+    }
+
+    #[test]
+    fn minutes_until_close_crypto_none() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
+        assert_eq!(Session::Crypto.minutes_until_close(t), None);
+    }
+
+    #[test]
+    fn mcx_should_exit_at_2320_ist() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 23, 20, 0).unwrap();
+        assert!(Session::Mcx.should_exit_intraday(t));
     }
 }

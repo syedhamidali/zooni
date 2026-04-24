@@ -1,4 +1,4 @@
-//! Bot orchestration: wires Bybit REST + Grid + Risk + persistence + alerts
+//! Bot orchestration: wires venue abstraction + Grid + Risk + persistence + alerts
 //! + retry + circuit breaker + dry-run + graceful shutdown + PnL tracking.
 
 use std::collections::HashSet;
@@ -21,13 +21,13 @@ use crate::retry::{CircuitBreaker, RetryPolicy, with_retry};
 use crate::risk::{Market, RiskConfig, RiskEngine};
 use crate::telegram::TelegramBot;
 use crate::tui::{GridLevelDisplay, TuiState};
-use crate::types::Side;
-use crate::venues::bybit;
+use crate::types::{OrderKind, Side};
+use crate::venue::Venue;
 use crate::ws_private::{self, WsEvent};
 
 /// Shared context passed to helper functions instead of many individual args.
 struct BotCtx<'a> {
-    client: &'a bybit::rest::Client,
+    venue: &'a Venue,
     engine: &'a Arc<Mutex<RiskEngine>>,
     symbol: &'a str,
     db: &'a Arc<Mutex<Db>>,
@@ -39,16 +39,24 @@ struct BotCtx<'a> {
 }
 
 /// Run the bot, optionally sharing TUI state for dashboard rendering.
-pub async fn run(cfg: BotConfig) -> Result<()> {
-    run_inner(cfg, None).await
+pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
+    run_inner(cfg, venue, None).await
 }
 
 /// Run the bot with a shared TUI state (used by `--tui` mode).
-pub async fn run_with_shared_tui(cfg: BotConfig, tui: Arc<Mutex<TuiState>>) -> Result<()> {
-    run_inner(cfg, Some(tui)).await
+pub async fn run_with_shared_tui(
+    cfg: BotConfig,
+    venue: Venue,
+    tui: Arc<Mutex<TuiState>>,
+) -> Result<()> {
+    run_inner(cfg, venue, Some(tui)).await
 }
 
-async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -> Result<()> {
+async fn run_inner(
+    cfg: BotConfig,
+    venue: Venue,
+    external_tui: Option<Arc<Mutex<TuiState>>>,
+) -> Result<()> {
     let dry_run = cfg.bot.dry_run;
     if dry_run {
         info!("*** DRY-RUN MODE — no orders will be sent to the exchange ***");
@@ -88,6 +96,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         daily_loss_limit: cfg.risk.daily_loss_limit,
         weekly_loss_limit: cfg.risk.weekly_loss_limit,
         max_drawdown: cfg.risk.max_drawdown,
+        max_consecutive_losses: cfg.risk.max_consecutive_losses,
     };
     let (engine, kill) = RiskEngine::new(risk_cfg, cfg.risk.starting_equity_quote);
     let engine = Arc::new(Mutex::new(engine));
@@ -184,38 +193,16 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         Duration::from_secs(cfg.bot.circuit_breaker_cooldown_secs),
     ));
 
-    // -- 6. Bybit client -------------------------------------------------------
-    let client = if dry_run {
-        // In dry-run, create client with dummy creds — we won't call the exchange.
-        let bybit_cfg = bybit::Config {
-            credentials: Some(bybit::Credentials {
-                api_key: "DRY_RUN".to_string(),
-                api_secret: "DRY_RUN".to_string(),
-            }),
-            testnet: true,
-            recv_window_ms: cfg.bybit.recv_window_ms,
-        };
-        bybit::rest::Client::new(bybit_cfg)
-    } else {
-        let bybit_cfg = bybit::Config {
-            credentials: Some(bybit::Credentials {
-                api_key: cfg.bybit.api_key.clone(),
-                api_secret: cfg.bybit.api_secret.clone(),
-            }),
-            testnet: cfg.bybit.testnet,
-            recv_window_ms: cfg.bybit.recv_window_ms,
-        };
-        bybit::rest::Client::new(bybit_cfg)
-    };
+    // -- 6. Venue client (provided by caller) ------------------------------------
     info!(
-        testnet = cfg.bybit.testnet,
-        base = client.base_url(),
-        "Bybit REST client ready"
+        venue = venue.name(),
+        base = venue.base_url(),
+        "venue client ready"
     );
 
-    // -- 6b. Private WebSocket for instant fill detection ----------------------
+    // -- 6b. Private WebSocket for instant fill detection (Bybit only) ----------
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    if !dry_run {
+    if !dry_run && venue.bybit_client().is_some() {
         let ws_api_key = cfg.bybit.api_key.clone();
         let ws_api_secret = cfg.bybit.api_secret.clone();
         let ws_testnet = cfg.bybit.testnet;
@@ -226,43 +213,24 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         info!("private WebSocket listener spawned");
     }
 
-    // -- 7. Clock sync check ---------------------------------------------------
+    // -- 7. Clock sync check (Bybit only) --------------------------------------
     if !dry_run {
-        check_clock_sync(&client).await;
+        check_clock_sync(&venue).await;
     }
 
     // -- 8. Credential check + wallet balance ---------------------------------
     if !dry_run {
-        match with_retry(&retry_policy, "wallet_balance", || {
-            client.wallet_balance(&cfg.bybit.account_type)
-        })
-        .await
-        {
-            Ok(accounts) => {
-                for a in &accounts {
-                    for c in &a.coin {
-                        if !c.wallet_balance.is_empty() && c.wallet_balance != "0" {
-                            info!(
-                                account = %a.account_type,
-                                coin = %c.coin,
-                                balance = %c.wallet_balance,
-                                "balance",
-                            );
-                        }
-                    }
-                }
-                // Update equity from actual USDT balance
-                for a in &accounts {
-                    for c in &a.coin {
-                        if (c.coin == "USDT" || c.coin == "USD")
-                            && let Ok(bal) = c.wallet_balance.parse::<f64>()
-                        {
-                            let mut guard = engine.lock().await;
-                            guard.set_equity(bal);
-                            info!(equity = bal, "equity updated from wallet");
-                        }
-                    }
-                }
+        match with_retry(&retry_policy, "wallet_balance", || venue.wallet_balance()).await {
+            Ok(balance) => {
+                info!(
+                    currency = %balance.currency,
+                    total_equity = balance.total_equity,
+                    available = balance.available,
+                    "balance",
+                );
+                let mut guard = engine.lock().await;
+                guard.set_equity(balance.total_equity);
+                info!(equity = balance.total_equity, "equity updated from wallet");
             }
             Err(e) => {
                 return Err(anyhow!(
@@ -280,21 +248,19 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         info!(mid, "dry-run: using midpoint of grid range as market price");
         ("0.01".to_string(), "0.000001".to_string(), 0.0001, 5.0, mid)
     } else {
-        let info = with_retry(&retry_policy, "instrument_info", || {
-            client.instrument_info_spot(&cfg.grid.symbol)
+        let inst = with_retry(&retry_policy, "instrument_info", || {
+            venue.instrument_info(&cfg.grid.symbol)
         })
         .await
         .context("instrument info fetch failed")?;
 
-        let ticker = with_retry(&retry_policy, "ticker", || {
-            client.ticker_spot(&cfg.grid.symbol)
-        })
-        .await
-        .context("ticker fetch failed")?;
+        let ticker = with_retry(&retry_policy, "ticker", || venue.ticker(&cfg.grid.symbol))
+            .await
+            .context("ticker fetch failed")?;
 
-        let last_price: f64 = ticker.last_price.parse().context("parse last_price")?;
-        let bid: f64 = ticker.bid1_price.parse().unwrap_or(last_price);
-        let ask: f64 = ticker.ask1_price.parse().unwrap_or(last_price);
+        let last_price = ticker.last_price;
+        let bid = ticker.bid_price.unwrap_or(last_price);
+        let ask = ticker.ask_price.unwrap_or(last_price);
         let mid = if bid > 0.0 && ask > 0.0 {
             (bid + ask) / 2.0
         } else {
@@ -302,15 +268,11 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         };
         info!(symbol = %cfg.grid.symbol, last = last_price, bid, ask, mid, "market snapshot");
 
-        let min_qty: f64 = info.lot_size_filter.min_order_qty.parse().unwrap_or(0.0);
-        let min_amt: f64 = info.lot_size_filter.min_order_amt.parse().unwrap_or(0.0);
-        (
-            info.price_filter.tick_size,
-            info.lot_size_filter.base_precision,
-            min_qty,
-            min_amt,
-            mid,
-        )
+        let tick_size_str = format!("{}", inst.tick_size);
+        let lot_size_str = format!("{}", inst.lot_size);
+        let min_qty = inst.min_qty;
+        let min_amt = 0.0_f64; // venue abstraction does not expose min_order_amt
+        (tick_size_str, lot_size_str, min_qty, min_amt, mid)
     };
 
     // -- 10. Build grid -------------------------------------------------------
@@ -351,7 +313,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                 "found persisted orders, reconciling with exchange"
             );
             let exchange_open = with_retry(&retry_policy, "open_orders_startup", || {
-                client.open_orders_spot(&cfg.grid.symbol)
+                venue.open_orders(&cfg.grid.symbol)
             })
             .await
             .unwrap_or_default();
@@ -389,14 +351,14 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
     // -- 12. Optional pre-clear of existing orders ----------------------------
     if cfg.grid.cancel_existing_on_start && grid.orders.is_empty() && !dry_run {
         info!("cancel_existing_on_start = true; clearing existing orders on symbol");
-        if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
-            warn!(err = %e, "cancel_all_spot failed (likely no orders to cancel)");
+        if let Err(e) = venue.cancel_all_orders(&cfg.grid.symbol).await {
+            warn!(err = %e, "cancel_all_orders failed (likely no orders to cancel)");
         }
     }
 
     // -- 13. Build shared context for grid helpers --------------------------------
     let ctx = BotCtx {
-        client: &client,
+        venue: &venue,
         engine: &engine,
         symbol: &cfg.grid.symbol,
         db: &db,
@@ -494,9 +456,9 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                     regime_check_counter += 1;
                     if regime_check_counter >= regime_check_interval {
                         regime_check_counter = 0;
-                        match client.klines(&cfg.grid.symbol, "60", 100).await {
-                            Ok(klines) => {
-                                if let Some(analysis) = crate::regime::analyze(&klines) {
+                        match venue.klines(&cfg.grid.symbol, "60", 100).await {
+                            Ok(venue_klines) => {
+                                if let Some(analysis) = crate::regime::analyze(&venue_klines) {
                                     info!(
                                         regime = %analysis.regime,
                                         adx = format!("{:.1}", analysis.adx),
@@ -588,20 +550,12 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
 
                 // Periodic equity + PnL refresh
                 if !dry_run {
-                    if let Ok(accounts) = client.wallet_balance(&cfg.bybit.account_type).await {
-                        for a in &accounts {
-                            for c in &a.coin {
-                                if (c.coin == "USDT" || c.coin == "USD")
-                                    && !c.wallet_balance.is_empty()
-                                    && let Ok(bal) = c.wallet_balance.parse::<f64>()
-                                {
-                                    let mut guard = engine.lock().await;
-                                    guard.set_equity(bal);
-                                    metrics.set_equity(bal);
-                                    metrics.series.lock().await.push_equity(bal);
-                                }
-                            }
-                        }
+                    if let Ok(balance) = venue.wallet_balance().await {
+                        let bal = balance.total_equity;
+                        let mut guard = engine.lock().await;
+                        guard.set_equity(bal);
+                        metrics.set_equity(bal);
+                        metrics.series.lock().await.push_equity(bal);
                     }
 
                     // Refresh daily/weekly PnL — batch db locks
@@ -709,9 +663,9 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
 
                 // Fetch current price for TUI + dashboard + rebalancing
                 if !dry_run
-                    && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
-                    && let Ok(price) = ticker.last_price.parse::<f64>()
+                    && let Ok(ticker) = venue.ticker(&cfg.grid.symbol).await
                 {
+                    let price = ticker.last_price;
                     let mut series = metrics.series.lock().await;
                     series.push_price(price);
                     drop(series);
@@ -721,9 +675,9 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                 // Dynamic grid rebalancing
                 if cfg.grid.auto_rebalance
                     && !dry_run
-                    && let Ok(ticker) = client.ticker_spot(&cfg.grid.symbol).await
-                    && let Ok(price) = ticker.last_price.parse::<f64>()
+                    && let Ok(ticker) = venue.ticker(&cfg.grid.symbol).await
                 {
+                    let price = ticker.last_price;
                     let lower = *grid.levels.first().unwrap_or(&0.0);
                     let upper = *grid.levels.last().unwrap_or(&0.0);
                     let range = upper - lower;
@@ -734,7 +688,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
                             lower, upper, "price near grid edge — rebalancing grid",
                         );
                         // Cancel all and re-place around new mid
-                        if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
+                        if let Err(e) = venue.cancel_all_orders(&cfg.grid.symbol).await {
                             warn!(err = %e, "cancel_all for rebalance failed");
                         } else {
                             // Mark all orders cancelled in DB
@@ -908,8 +862,8 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
 
     if !dry_run {
         info!("shutdown: cancelling all orders on symbol");
-        if let Err(e) = client.cancel_all_spot(&cfg.grid.symbol).await {
-            error!(err = %e, "cancel_all_spot at shutdown failed");
+        if let Err(e) = venue.cancel_all_orders(&cfg.grid.symbol).await {
+            error!(err = %e, "cancel_all_orders at shutdown failed");
         } else {
             info!("shutdown cancel_all ok");
             // Mark all tracked orders as cancelled
@@ -942,9 +896,12 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
     Ok(())
 }
 
-/// Check if local clock is within acceptable drift of Bybit server time.
-async fn check_clock_sync(client: &bybit::rest::Client) {
-    match client.server_time().await {
+/// Check if local clock is within acceptable drift of server time (Bybit only).
+async fn check_clock_sync(venue: &Venue) {
+    let Some(bybit_client) = venue.bybit_client() else {
+        return; // clock-sync check is Bybit-specific
+    };
+    match bybit_client.server_time().await {
         Ok(server_ms) => {
             let local_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -968,7 +925,7 @@ async fn check_clock_sync(client: &bybit::rest::Client) {
 
 async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
     let BotCtx {
-        client,
+        venue,
         engine,
         symbol,
         db,
@@ -1064,13 +1021,13 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
     let link_id_clone = link_id.clone();
 
     match with_retry(retry_policy, "place_order", || {
-        client.place_spot_order(
+        venue.place_order(
             symbol,
             side,
-            "Limit",
+            OrderKind::Limit,
             &qty_str,
-            Some(&price_str),
-            Some(&link_id_clone),
+            Some(price_str.as_str()),
+            Some(link_id_clone.as_str()),
         )
     })
     .await
@@ -1135,7 +1092,7 @@ async fn reconcile_once(ctx: &BotCtx<'_>, grid: &mut Grid, regime_paused: bool) 
     }
 
     let open = with_retry(ctx.retry_policy, "open_orders", || {
-        ctx.client.open_orders_spot(ctx.symbol)
+        ctx.venue.open_orders(ctx.symbol)
     })
     .await?;
 
@@ -1145,10 +1102,8 @@ async fn reconcile_once(ctx: &BotCtx<'_>, grid: &mut Grid, regime_paused: bool) 
     let mut partial_fills: std::collections::HashMap<String, f64> =
         std::collections::HashMap::new();
     for o in &open {
-        if let Ok(cum_qty) = o.cum_exec_qty.parse::<f64>()
-            && cum_qty > 0.0
-        {
-            partial_fills.insert(o.order_id.clone(), cum_qty);
+        if o.filled_qty > 0.0 {
+            partial_fills.insert(o.order_id.clone(), o.filled_qty);
         }
     }
 

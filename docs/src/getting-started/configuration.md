@@ -45,6 +45,8 @@ starting_equity_quote = 10000.0
 | `[autopilot]` | Autonomous mode settings |
 | `[autopilot.scanner]` | Market scanner tuning |
 | `[funding_arb]` | Funding rate arbitrage settings (optional) |
+| `[tax]` | Tax-aware profitability engine for Indian markets (optional) |
+| `[slippage]` | Slippage protection and limit order preferences (optional) |
 
 See the [Configuration Reference](../reference/config.md) for a complete field-by-field listing.
 

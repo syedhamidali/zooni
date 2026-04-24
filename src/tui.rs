@@ -23,6 +23,7 @@ use ratatui::{
 use tokio::sync::Mutex;
 
 use crate::config::BotConfig;
+use crate::venue::Venue;
 
 /// Shared state between the bot and the TUI.
 pub struct TuiState {
@@ -87,7 +88,7 @@ impl TuiState {
 
 /// Run the bot with TUI overlay. The bot writes live data into shared TuiState,
 /// and the render loop displays it in the terminal.
-pub async fn run_with_tui(cfg: BotConfig) -> Result<()> {
+pub async fn run_with_tui(cfg: BotConfig, venue: Venue) -> Result<()> {
     let state = Arc::new(Mutex::new(TuiState::new(&cfg)));
 
     // Start TUI rendering in a separate task
@@ -101,7 +102,7 @@ pub async fn run_with_tui(cfg: BotConfig) -> Result<()> {
     // Run the bot with shared TUI state — bot updates state each tick
     let bot_state = state.clone();
     let bot_handle = tokio::spawn(async move {
-        if let Err(e) = crate::bot::run_with_shared_tui(cfg, bot_state).await {
+        if let Err(e) = crate::bot::run_with_shared_tui(cfg, venue, bot_state).await {
             eprintln!("Bot error: {e}");
         }
     });

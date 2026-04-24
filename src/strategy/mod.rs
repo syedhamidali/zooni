@@ -4,6 +4,12 @@
 
 pub mod dca;
 pub mod funding_arb;
+pub mod grid_strategy;
+pub mod momentum;
+pub mod pairs;
+pub mod performance;
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 
@@ -66,6 +72,14 @@ pub trait Strategy: Send {
 
     /// Shutdown: return cleanup actions (usually CancelAll).
     fn on_shutdown(&mut self) -> Result<Vec<StrategyAction>>;
+
+    /// Return current tunable parameters with their values.
+    fn tunable_params(&self) -> HashMap<String, f64> {
+        HashMap::new()
+    }
+
+    /// Apply parameter adjustments. Keys must match those from `tunable_params`.
+    fn apply_params(&mut self, _params: &HashMap<String, f64>) {}
 }
 
 /// A fill event reported to the strategy.

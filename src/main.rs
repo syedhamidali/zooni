@@ -1,10 +1,12 @@
 //! Trading bot — entry point.
 //!
 //! Usage:
-//!   cargo run --release --bin trading-bot -- config.toml
-//!   cargo run --release --bin trading-bot -- config.toml --dry-run
-//!   cargo run --release --bin trading-bot -- config.toml --tui
-//!   cargo run --release --bin backtest -- config.toml --data prices.csv
+//!   cargo run --release --bin zooni -- config.toml
+//!   cargo run --release --bin zooni -- config.toml --dry-run
+//!   cargo run --release --bin zooni -- config.toml --tui
+//!   cargo run --release --bin zooni -- config.toml --venue zerodha
+//!   cargo run --release --bin zooni-backtest -- config.toml --data prices.csv
+//!   cargo run --release --bin zooni-kite-login -- config.toml
 
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
@@ -52,18 +54,44 @@ async fn main() -> Result<()> {
 
     let autopilot = cfg.autopilot.enabled || args.iter().any(|a| a == "--autopilot");
     let funding_arb = args.iter().any(|a| a == "--funding-arb");
+    let orchestrator = args.iter().any(|a| a == "--orchestrator");
 
-    if funding_arb {
+    let venue_override = args
+        .iter()
+        .position(|a| a == "--venue")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str());
+
+    let is_zerodha = venue_override
+        .map(|v| v.eq_ignore_ascii_case("zerodha") || v.eq_ignore_ascii_case("kite"))
+        .unwrap_or(false);
+
+    let venue_name = if is_zerodha { "Zerodha" } else { "Bybit" };
+
+    if orchestrator {
         tracing::info!(
             config = %config_path,
-            testnet = cfg.bybit.testnet,
+            venue = venue_name,
+            dry_run = cfg.bot.dry_run,
+            ema_decay = cfg.orchestrator.ema_decay,
+            temperature = cfg.orchestrator.temperature,
+            rebalance_interval = cfg.orchestrator.rebalance_interval,
+            "starting in ORCHESTRATOR mode (multi-strategy adaptive)",
+        );
+    } else if funding_arb {
+        if is_zerodha {
+            anyhow::bail!("funding-arb mode requires perpetual contracts (Bybit only)");
+        }
+        tracing::info!(
+            config = %config_path,
+            venue = venue_name,
             dry_run = cfg.bot.dry_run,
             "starting in FUNDING-ARB mode",
         );
     } else if autopilot {
         tracing::info!(
             config = %config_path,
-            testnet = cfg.bybit.testnet,
+            venue = venue_name,
             dry_run = cfg.bot.dry_run,
             max_grids = cfg.autopilot.max_grids,
             scan_interval = cfg.autopilot.scan_interval_secs,
@@ -72,7 +100,7 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!(
             config = %config_path,
-            testnet = cfg.bybit.testnet,
+            venue = venue_name,
             symbol = %cfg.grid.symbol,
             levels = cfg.grid.levels,
             lower = cfg.grid.lower_price,
@@ -82,13 +110,23 @@ async fn main() -> Result<()> {
         );
     }
 
-    if funding_arb {
+    if orchestrator {
+        let venue = cfg.build_venue(venue_override);
+        zooni::orchestrator_runner::run(cfg, venue).await
+    } else if funding_arb {
         zooni::funding_arb::run(cfg).await
     } else if autopilot {
         zooni::autopilot::run(cfg).await
     } else if use_tui {
-        zooni::tui::run_with_tui(cfg).await
+        let venue = cfg.build_venue(venue_override);
+        zooni::tui::run_with_tui(cfg, venue).await
     } else {
-        zooni::bot::run(cfg).await
+        if is_zerodha {
+            let venue = cfg.build_venue(venue_override);
+            zooni::orchestrator_runner::run(cfg, venue).await
+        } else {
+            let venue = cfg.build_venue(venue_override);
+            zooni::bot::run(cfg, venue).await
+        }
     }
 }

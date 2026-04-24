@@ -4,7 +4,7 @@
 //! and recommends strategy parameters accordingly.
 
 use crate::indicators;
-use crate::venues::bybit::rest::Kline;
+use crate::venue::VenueKline as Kline;
 
 /// Market regime classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

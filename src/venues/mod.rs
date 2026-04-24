@@ -11,4 +11,5 @@ pub mod bybit;
 pub mod hyperliquid;
 pub mod interactive_brokers;
 pub mod mcx;
+pub mod yahoo;
 pub mod zerodha;

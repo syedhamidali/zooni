@@ -205,7 +205,9 @@ pub async fn scan(client: &Client, cfg: &ScannerConfig) -> Result<Vec<ScanResult
             .await
         {
             Ok(klines) => {
-                if let Some(analysis) = regime::analyze(&klines) {
+                let venue_klines: Vec<crate::venue::VenueKline> =
+                    klines.into_iter().map(Into::into).collect();
+                if let Some(analysis) = regime::analyze(&venue_klines) {
                     let last_price: f64 = ticker.last_price.parse().unwrap_or(0.0);
                     let turnover: f64 = ticker.turnover_24h.parse().unwrap_or(0.0);
                     let volume: f64 = ticker.volume_24h.parse().unwrap_or(0.0);
