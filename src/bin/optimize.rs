@@ -204,6 +204,8 @@ fn main() -> Result<()> {
                 use_post_only: false,
                 vwap_entry_filter: false,
                 vwap_threshold_pct: 0.005,
+                venue: "bybit".to_string(),
+                respect_market_hours: false,
             };
 
             let train_result = run_backtest(

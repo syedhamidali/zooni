@@ -38,6 +38,8 @@ fn bench_grid(c: &mut Criterion) {
         use_post_only: true,
         vwap_entry_filter: false,
         vwap_threshold_pct: 0.005,
+        venue: "bybit".to_string(),
+        respect_market_hours: false,
     };
     let g = grid::Grid::new(&cfg, "0.01".into(), "0.00001".into(), 0.00001, 5.0);
 

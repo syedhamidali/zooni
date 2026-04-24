@@ -24,6 +24,8 @@ fn test_grid() -> Grid {
         use_post_only: true,
         vwap_entry_filter: false,
         vwap_threshold_pct: 0.005,
+        venue: "bybit".to_string(),
+        respect_market_hours: false,
     };
     Grid::new(&cfg, "0.01".into(), "0.00001".into(), 0.00001, 5.0)
 }
@@ -118,6 +120,8 @@ fn qty_respects_base_precision() {
         use_post_only: true,
         vwap_entry_filter: false,
         vwap_threshold_pct: 0.005,
+        venue: "bybit".to_string(),
+        respect_market_hours: false,
     };
     let g = Grid::new(&cfg, "0.01".into(), "0.001".into(), 0.001, 5.0);
     let plan = g.plan_initial(3250.0);

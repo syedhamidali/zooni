@@ -460,6 +460,8 @@ fn build_backtest_strategies(
                     recenter_threshold_pct: 0.15,
                     vwap_entry_filter: false,
                     vwap_threshold_pct: 0.005,
+                    venue: "bybit".to_string(),
+                    respect_market_hours: false,
                 })));
             }
             "pairs" => {
