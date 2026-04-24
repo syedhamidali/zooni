@@ -219,6 +219,12 @@ pub struct FundingArbCfg {
     /// Max unrealised loss as fraction of position before force-exit.
     #[serde(default = "default_arb_max_loss")]
     pub max_unrealised_loss_pct: f64,
+    /// Estimated annual borrow cost (%) for the spot leg hedge.
+    #[serde(default = "default_arb_borrow_cost")]
+    pub borrow_cost_annual_pct: f64,
+    /// Minimum net yield (%) after borrow costs to justify entry.
+    #[serde(default = "default_arb_min_net_yield")]
+    pub min_net_yield_pct: f64,
     /// How often to scan funding rates (seconds).
     #[serde(default = "default_arb_scan_interval")]
     pub scan_interval_secs: u64,
@@ -247,6 +253,12 @@ fn default_arb_min_positive() -> usize {
 }
 fn default_arb_max_loss() -> f64 {
     0.02
+}
+fn default_arb_borrow_cost() -> f64 {
+    10.0
+}
+fn default_arb_min_net_yield() -> f64 {
+    5.0
 }
 fn default_arb_scan_interval() -> u64 {
     300
@@ -431,6 +443,28 @@ impl BotConfig {
             self.risk.starting_equity_quote > 0.0,
             "risk.starting_equity_quote must be > 0"
         );
+        anyhow::ensure!(
+            self.risk.max_total_exposure > 0.0,
+            "risk.max_total_exposure must be > 0"
+        );
+        anyhow::ensure!(
+            self.risk.daily_loss_limit > 0.0,
+            "risk.daily_loss_limit must be > 0"
+        );
+        anyhow::ensure!(
+            self.risk.max_drawdown > 0.0 && self.risk.max_drawdown <= 1.0,
+            "risk.max_drawdown must be in (0, 1]"
+        );
+        if let Some(ref fa) = self.funding_arb {
+            anyhow::ensure!(
+                fa.entry_threshold > 0.0,
+                "funding_arb.entry_threshold must be > 0"
+            );
+            anyhow::ensure!(
+                fa.max_positions > 0,
+                "funding_arb.max_positions must be > 0"
+            );
+        }
         Ok(())
     }
 }

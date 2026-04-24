@@ -380,7 +380,13 @@ impl Strategy for MomentumStrategy {
             if signal.is_some() && signal != self.last_signal {
                 let atr_val = self.current_atr();
                 if let (Some(sig), Some(atr)) = (signal, atr_val) {
-                    let qty = self.config.position_size_quote / snapshot.last;
+                    // Scale position size inversely with volatility:
+                    // higher ATR → smaller position, lower ATR → larger position.
+                    // Use ATR as % of price; clamp scaling factor to [0.25, 2.0].
+                    let atr_pct = atr / snapshot.last;
+                    let base_atr_pct = 0.02; // 2% baseline volatility
+                    let vol_scale = (base_atr_pct / atr_pct).clamp(0.25, 2.0);
+                    let qty = (self.config.position_size_quote * vol_scale) / snapshot.last;
 
                     let (side, price, stop, target) = match sig {
                         Signal::GoLong => {

@@ -228,9 +228,29 @@ impl Strategy for DcaStrategy {
             }
         }
 
-        // Buy logic
+        // Buy logic — adjust interval based on volatility (ATR).
+        // Higher volatility → buy less frequently; lower → buy more frequently.
         self.tick_count += 1;
-        if self.tick_count >= self.interval_ticks {
+        let effective_interval = if self.price_history.len() >= 15 {
+            // Compute a simple ATR proxy using recent price range
+            let recent = &self.price_history[self.price_history.len().saturating_sub(14)..];
+            let avg_price = recent.iter().sum::<f64>() / recent.len() as f64;
+            if avg_price > 0.0 {
+                let volatility: f64 = recent
+                    .windows(2)
+                    .map(|w| ((w[1] - w[0]) / avg_price).abs())
+                    .sum::<f64>()
+                    / (recent.len() - 1) as f64;
+                let base_vol = 0.01; // 1% baseline daily volatility
+                let scale = (volatility / base_vol).clamp(0.5, 3.0);
+                ((self.interval_ticks as f64 * scale) as u64).max(1)
+            } else {
+                self.interval_ticks
+            }
+        } else {
+            self.interval_ticks
+        };
+        if self.tick_count >= effective_interval {
             if self.use_sma_filter {
                 if let Some(sma_value) =
                     crate::indicators::sma(&self.price_history, self.sma_period)
