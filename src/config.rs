@@ -21,6 +21,8 @@ pub struct BotConfig {
     pub bot: BotSettings,
     #[serde(default)]
     pub autopilot: AutoPilotConfig,
+    #[serde(default)]
+    pub zerodha: Option<ZerodhaCfg>,
 }
 
 /// Auto-pilot mode: the bot autonomously scans, picks symbols, and manages grids.
@@ -77,6 +79,28 @@ pub struct BybitCfg {
     /// Account type for wallet-balance lookups. For testnet this is usually "UNIFIED".
     #[serde(default = "default_account_type")]
     pub account_type: String,
+}
+
+/// Zerodha Kite Connect credentials. Optional — only needed for Indian markets.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ZerodhaCfg {
+    pub api_key: String,
+    pub api_secret: String,
+    /// Access token from the daily login flow. Can also be set at runtime.
+    #[serde(default)]
+    pub access_token: Option<String>,
+}
+
+impl ZerodhaCfg {
+    pub fn into_venue_config(self) -> crate::venues::zerodha::Config {
+        crate::venues::zerodha::Config {
+            credentials: Some(crate::venues::zerodha::Credentials {
+                api_key: self.api_key,
+                api_secret: self.api_secret,
+                access_token: self.access_token,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

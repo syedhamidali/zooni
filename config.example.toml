@@ -24,6 +24,14 @@ recv_window_ms = 5000
 account_type   = "UNIFIED"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Zerodha Kite Connect (optional — for Indian equity, F&O, MCX)
+# ─────────────────────────────────────────────────────────────────────────────
+# [zerodha]
+# api_key      = "YOUR_KITE_API_KEY"
+# api_secret   = "YOUR_KITE_API_SECRET"
+# access_token = ""  # refreshed daily via login flow; can be set at runtime
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Grid strategy
 # ─────────────────────────────────────────────────────────────────────────────
 [grid]
