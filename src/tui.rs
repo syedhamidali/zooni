@@ -43,6 +43,11 @@ pub struct TuiState {
     pub grid_state: Vec<GridLevelDisplay>,
     pub last_error: Option<String>,
     pub circuit_breaker_open: bool,
+    /// Risk-adjusted metrics (None = insufficient data).
+    pub sharpe: Option<f64>,
+    pub sortino: Option<f64>,
+    pub max_drawdown: f64,
+    pub win_rate: f64,
 }
 
 #[derive(Clone)]
@@ -82,6 +87,10 @@ impl TuiState {
             grid_state: Vec::new(),
             last_error: None,
             circuit_breaker_open: false,
+            sharpe: None,
+            sortino: None,
+            max_drawdown: 0.0,
+            win_rate: 0.0,
         }
     }
 }
@@ -132,6 +141,7 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
                 .constraints([
                     Constraint::Length(3), // header
                     Constraint::Min(8),    // grid + fills
+                    Constraint::Length(3), // risk metrics bar
                     Constraint::Length(3), // footer
                 ])
                 .split(f.area());
@@ -253,6 +263,30 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
             );
             f.render_widget(fills_table, main_chunks[1]);
 
+            // Risk metrics bar
+            let sharpe_str = s
+                .sharpe
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_else(|| "--".to_string());
+            let sortino_str = s
+                .sortino
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_else(|| "--".to_string());
+            let maxdd_str = format!("{:.1}%", s.max_drawdown * -100.0);
+            let wr_str = format!("{:.0}%", s.win_rate * 100.0);
+            let risk_text = format!(
+                " Sharpe: {} | Sortino: {} | MaxDD: {} | WinRate: {}",
+                sharpe_str, sortino_str, maxdd_str, wr_str,
+            );
+            let risk_bar = Paragraph::new(risk_text)
+                .style(Style::default().fg(Color::Magenta))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Risk Metrics "),
+                );
+            f.render_widget(risk_bar, chunks[2]);
+
             // Footer
             let mut footer_spans = vec![
                 Span::styled(
@@ -279,7 +313,7 @@ async fn render_loop(state: Arc<Mutex<TuiState>>) -> Result<()> {
             }
             let footer = Paragraph::new(Line::from(footer_spans))
                 .block(Block::default().borders(Borders::ALL));
-            f.render_widget(footer, chunks[2]);
+            f.render_widget(footer, chunks[3]);
         })?;
         drop(s);
 

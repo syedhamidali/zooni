@@ -16,6 +16,7 @@ use tracing::{error, info, warn};
 use crate::alerts::Alerter;
 use crate::config::BotConfig;
 use crate::grid::{Grid, LevelOrder, PlannedOrder};
+use crate::market_hours;
 use crate::metrics::Metrics;
 use crate::persistence::{Db, FillRow, OrderRow, OrderStatus};
 use crate::retry::{CircuitBreaker, RetryPolicy, with_retry};
@@ -24,7 +25,7 @@ use crate::telegram::TelegramBot;
 use crate::tui::{GridLevelDisplay, TuiState};
 use crate::types::{OrderKind, Side};
 use crate::venue::Venue;
-use crate::venues::bybit::rest::Client as BybitRestClient;
+use crate::venues::bybit::rest::{Client as BybitRestClient, ExchangeOrderStatus};
 use crate::ws_private::{self, WsEvent};
 
 /// Shared context passed to helper functions instead of many individual args.
@@ -318,6 +319,33 @@ async fn run_inner(
     }
 
     // -- 11. Position reconciliation on startup --------------------------------
+    // 11a. Deep reconciliation: query each DB-open order's exact status on the
+    //      exchange to recover fills or cancellations that occurred offline.
+    if !dry_run && cfg.bot.reconcile_on_startup {
+        if let Some(bybit_client) = venue.bybit_client() {
+            info!(
+                "running startup fill reconciliation (lookback={}s)",
+                cfg.bot.reconcile_lookback_secs
+            );
+            match reconcile_fills(
+                bybit_client,
+                &db,
+                &cfg.grid.symbol,
+                cfg.bot.reconcile_lookback_secs,
+            )
+            .await
+            {
+                Ok((filled, cancelled)) => {
+                    info!(filled, cancelled, "startup fill reconciliation complete");
+                }
+                Err(e) => {
+                    warn!(err = %e, "startup fill reconciliation failed — continuing with best-effort");
+                }
+            }
+        }
+    }
+
+    // 11b. Restore still-open orders from DB into the in-memory grid.
     if !dry_run {
         let db_orders = db.lock().await.open_orders(&cfg.grid.symbol)?;
         if !db_orders.is_empty() {
@@ -539,6 +567,65 @@ async fn run_inner(
                     warn!("circuit breaker open — skipping reconciliation tick");
                     continue;
                 }
+
+                // ── Market hours guard ─────────────────────────────────────────
+                if cfg.grid.respect_market_hours {
+                    let now = Utc::now();
+                    let venue_id = cfg.grid.venue.as_str();
+                    if !market_hours::is_market_open(venue_id, now) {
+                        // Log and skip — the tick interval already handles re-checking.
+                        // Display a human-readable next-open estimate in IST.
+                        let ist: chrono_tz::Tz = chrono_tz::Asia::Kolkata;
+                        let local = now.with_timezone(&ist);
+                        let open_str = local
+                            .date_naive()
+                            .succ_opt()
+                            .and_then(|d| d.and_hms_opt(9, 15, 0))
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M IST").to_string())
+                            .unwrap_or_else(|| "next session".to_string());
+                        info!(venue = venue_id, "Market closed. Sleeping until {open_str}");
+                        continue;
+                    }
+
+                    // Pre-close: cancel all buy orders 15 minutes before close.
+                    if let Some(mins) = market_hours::minutes_until_close(venue_id, now) {
+                        if (0..=15).contains(&mins) {
+                            info!(
+                                venue = venue_id,
+                                mins,
+                                "Market closing in {mins}min — cancelling buy orders"
+                            );
+                            let buy_levels: Vec<(usize, String)> = grid
+                                .orders
+                                .iter()
+                                .filter(|(_, o)| matches!(o.side, crate::types::Side::Buy))
+                                .map(|(&lvl, o)| (lvl, o.order_id.clone()))
+                                .collect();
+                            for (lvl, order_id) in buy_levels {
+                                match venue.cancel_order(&cfg.grid.symbol, &order_id).await {
+                                    Ok(()) => {
+                                        info!(
+                                            level = lvl,
+                                            %order_id,
+                                            "buy order cancelled before market close",
+                                        );
+                                        grid.orders.remove(&lvl);
+                                        let _ = db.lock().await.mark_cancelled(&order_id);
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            level = lvl,
+                                            %order_id,
+                                            err = %e,
+                                            "failed to cancel buy order before close",
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ──────────────────────────────────────────────────────────────
 
                 // Periodic regime detection — auto-pause during unfavorable conditions
                 if !dry_run {
@@ -1391,6 +1478,133 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
                 .await;
         }
     }
+}
+
+/// Startup reconciliation: for every order the DB thinks is `Open`, query the
+/// exchange for its real status and sync any fills or cancellations that
+/// happened while the bot was offline.
+///
+/// Returns `(filled_count, cancelled_count)`.
+async fn reconcile_fills(
+    bybit: &BybitRestClient,
+    db: &Arc<Mutex<Db>>,
+    symbol: &str,
+    lookback_secs: u64,
+) -> Result<(usize, usize)> {
+    let db_open = db.lock().await.open_orders(symbol)?;
+    if db_open.is_empty() {
+        return Ok((0, 0));
+    }
+
+    // Compute the earliest timestamp we care about for the fill-history query.
+    let since_ms = {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        now_ms.saturating_sub(lookback_secs * 1_000)
+    };
+
+    // Pre-fetch recent fills so we can look up actual fill prices.
+    let recent_fills: std::collections::HashMap<String, crate::venues::bybit::rest::Fill> =
+        match bybit.get_recent_fills(symbol, since_ms).await {
+            Ok(fills) => fills.into_iter().map(|f| (f.order_id.clone(), f)).collect(),
+            Err(e) => {
+                warn!(
+                    err = %e,
+                    "reconcile_fills: could not fetch recent fills — will use order price as fallback"
+                );
+                std::collections::HashMap::new()
+            }
+        };
+
+    let mut filled_count = 0usize;
+    let mut cancelled_count = 0usize;
+
+    for dbo in &db_open {
+        let status_info = match bybit.get_order_status(symbol, &dbo.order_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    order_id = %dbo.order_id,
+                    err = %e,
+                    "reconcile_fills: could not query order status — skipping"
+                );
+                continue;
+            }
+        };
+
+        match status_info.status {
+            ExchangeOrderStatus::Filled => {
+                // Use the execution fill price if available, otherwise fall back
+                // to the average price returned by the order query.
+                let fill_price = if let Some(exec) = recent_fills.get(&dbo.order_id) {
+                    exec.exec_price
+                } else if status_info.avg_fill_price > 0.0 {
+                    status_info.avg_fill_price
+                } else {
+                    dbo.price
+                };
+                let fill_qty = if status_info.filled_qty > 0.0 {
+                    status_info.filled_qty
+                } else {
+                    dbo.qty
+                };
+
+                {
+                    let db_guard = db.lock().await;
+                    db_guard.mark_filled(&dbo.order_id, fill_price, fill_qty)?;
+                    let side = if let Some(exec) = recent_fills.get(&dbo.order_id) {
+                        exec.side
+                    } else {
+                        dbo.side
+                    };
+                    let notional = fill_price * fill_qty;
+                    let _ = db_guard.insert_fill(&FillRow {
+                        order_id: dbo.order_id.clone(),
+                        symbol: symbol.to_string(),
+                        side,
+                        price: fill_price,
+                        qty: fill_qty,
+                        notional,
+                        realised_pnl: 0.0, // grid P&L computed by reconcile_once at runtime
+                        filled_at: chrono::Utc::now(),
+                    });
+                }
+
+                info!(
+                    order_id = %dbo.order_id,
+                    price = fill_price,
+                    "Reconciled orphaned fill: order {} filled at {}",
+                    dbo.order_id,
+                    fill_price,
+                );
+                filled_count += 1;
+            }
+            ExchangeOrderStatus::Cancelled => {
+                db.lock().await.mark_cancelled(&dbo.order_id)?;
+                info!(
+                    order_id = %dbo.order_id,
+                    "Reconciled cancelled order: {}",
+                    dbo.order_id,
+                );
+                cancelled_count += 1;
+            }
+            ExchangeOrderStatus::Open | ExchangeOrderStatus::Unknown(_) => {
+                // Still open (or unknown) — no action needed.
+            }
+        }
+    }
+
+    info!(
+        filled = filled_count,
+        cancelled = cancelled_count,
+        "Reconciliation complete: {} fills recovered, {} orders reconciled",
+        filled_count,
+        cancelled_count,
+    );
+
+    Ok((filled_count, cancelled_count))
 }
 
 async fn reconcile_once(ctx: &BotCtx<'_>, grid: &mut Grid, regime_paused: bool) -> Result<()> {

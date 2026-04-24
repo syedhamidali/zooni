@@ -879,6 +879,8 @@ pub fn optimize_grid(
                 use_post_only: false,
                 vwap_entry_filter: false,
                 vwap_threshold_pct: 0.005,
+                venue: "bybit".to_string(),
+                respect_market_hours: false,
             };
             let result = run_backtest(&cfg, bars, starting_equity, "0.01", "0.000001", false);
             results.push((n, lower, upper, result));
@@ -974,7 +976,7 @@ pub fn run_orchestrator_backtest_with_data(
     let pairs_sym_a = orch_config.pairs.symbol_a.clone();
     let pairs_sym_b = orch_config.pairs.symbol_b.clone();
 
-    let mut orchestrator = Orchestrator::new(strategies, orch_config);
+    let mut orchestrator = Orchestrator::new("BTCUSDT", strategies, orch_config);
     let mut pnl_tracker = PnlTracker::new();
     let mut pending_orders: Vec<PendingOrder> = Vec::new();
     let mut equity = starting_equity;
@@ -1465,6 +1467,8 @@ mod tests {
             use_post_only: true,
             vwap_entry_filter: false,
             vwap_threshold_pct: 0.005,
+            venue: "bybit".to_string(),
+            respect_market_hours: false,
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", false);
         assert!(result.total_fills > 0, "should have at least one fill");
@@ -1510,6 +1514,8 @@ mod tests {
             use_post_only: true,
             vwap_entry_filter: false,
             vwap_threshold_pct: 0.005,
+            venue: "bybit".to_string(),
+            respect_market_hours: false,
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", true);
         assert!(result.bars_processed == 500);

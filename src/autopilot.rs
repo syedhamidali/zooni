@@ -629,6 +629,8 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
         use_post_only: bot_cfg.grid.use_post_only,
         vwap_entry_filter: bot_cfg.grid.vwap_entry_filter,
         vwap_threshold_pct: bot_cfg.grid.vwap_threshold_pct,
+        venue: bot_cfg.grid.venue.clone(),
+        respect_market_hours: bot_cfg.grid.respect_market_hours,
     };
 
     let mut g = Grid::new(

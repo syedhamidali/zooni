@@ -54,6 +54,9 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
         info!("*** DRY-RUN MODE — no orders will be sent ***");
     }
 
+    // Wrap in Arc so extra-symbol background loops can share it without cloning.
+    let venue = Arc::new(venue);
+
     let symbol = cfg.grid.symbol.clone();
 
     // -- Persistence --
@@ -135,13 +138,102 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
         }
     }
 
-    // -- Build strategies --
-    let strategies = build_strategies(&symbol, &cfg);
-    let strategy_names: Vec<String> = strategies.iter().map(|s| s.name().to_string()).collect();
-    info!(strategies = ?strategy_names, "strategies initialised");
+    // -- Determine symbols to trade --
+    // Use orchestrator.symbols if non-empty; fall back to cfg.grid.symbol.
+    let symbols: Vec<String> = if cfg.orchestrator.symbols.is_empty() {
+        vec![cfg.grid.symbol.clone()]
+    } else {
+        cfg.orchestrator.symbols.clone()
+    };
+    let capital_per_symbol =
+        cfg.risk.starting_equity_quote * cfg.orchestrator.capital_per_symbol_pct;
 
-    // -- Build orchestrator --
-    let mut orchestrator = Orchestrator::new(strategies, cfg.orchestrator.clone());
+    // -- Build one Orchestrator per symbol --
+    let mut symbol_orchestrators: Vec<Orchestrator> = symbols
+        .iter()
+        .map(|sym| {
+            info!(
+                symbol = %sym,
+                capital = format!("{:.0}", capital_per_symbol),
+                "Starting strategy set for {} with {:.0} USDT capital",
+                sym,
+                capital_per_symbol,
+            );
+            let strats = build_strategies(sym, &cfg);
+            let names: Vec<String> = strats.iter().map(|s| s.name().to_string()).collect();
+            info!(symbol = %sym, strategies = ?names, "strategies initialised for symbol");
+            Orchestrator::new(sym.clone(), strats, cfg.orchestrator.clone())
+        })
+        .collect();
+
+    // The primary orchestrator drives the rest of the function (single-symbol path).
+    let mut orchestrator = symbol_orchestrators.remove(0);
+
+    // Spawn background tick loops for additional symbols (index 1+).
+    for extra_orch in symbol_orchestrators {
+        let kill2 = kill.clone();
+        let venue2 = venue.clone();
+        let poll_secs2 = cfg.grid.poll_secs;
+        let dry_run2 = dry_run;
+        let extra_sym = extra_orch.symbol.clone();
+        let mid2 = (cfg.grid.lower_price + cfg.grid.upper_price) / 2.0;
+        let initial_snap2 = crate::strategy::MarketSnapshot {
+            symbol: extra_sym.clone(),
+            bid: mid2 - 1.0,
+            ask: mid2 + 1.0,
+            last: mid2,
+            volume_24h: 1_000_000.0,
+        };
+        tokio::spawn(async move {
+            let poll_interval2 = std::time::Duration::from_secs(poll_secs2);
+            let mut orch2 = extra_orch;
+            let _ = orch2.on_start(&initial_snap2);
+            loop {
+                if kill2.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                tokio::time::sleep(poll_interval2).await;
+                let snap2 = if dry_run2 {
+                    initial_snap2.clone()
+                } else {
+                    match venue2.ticker(&extra_sym).await {
+                        Ok(t) => crate::strategy::MarketSnapshot {
+                            symbol: extra_sym.clone(),
+                            bid: t.bid_price.unwrap_or(t.last_price),
+                            ask: t.ask_price.unwrap_or(t.last_price),
+                            last: t.last_price,
+                            volume_24h: 0.0,
+                        },
+                        Err(e) => {
+                            warn!(
+                                symbol = %extra_sym,
+                                err = %e,
+                                "ticker fetch failed for extra symbol"
+                            );
+                            continue;
+                        }
+                    }
+                };
+                if let Err(e) = orch2.on_tick(&snap2, &[], None) {
+                    warn!(
+                        symbol = %extra_sym,
+                        err = %e,
+                        "orchestrator tick failed for extra symbol"
+                    );
+                }
+            }
+            let _ = orch2.on_shutdown();
+            info!(symbol = %extra_sym, "extra symbol loop shut down");
+        });
+    }
+
+    // The primary symbol drives the rest of run() unchanged.
+    let strategy_names: Vec<String> = orchestrator
+        .all_performances()
+        .iter()
+        .map(|p| p.strategy_name.clone())
+        .collect();
+    info!(strategies = ?strategy_names, symbol = %symbol, "primary symbol strategies initialised");
 
     // -- Load persisted state --
     {
@@ -261,6 +353,9 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
                 pnl: pnl_fn,
                 alloc: alloc_fn,
                 regime: regime_fn,
+                kill_and_cancel: None,
+                open_orders: None,
+                zerodha_kill: None,
             };
 
             tokio::spawn(async move {
@@ -791,6 +886,8 @@ fn build_strategies(symbol: &str, cfg: &BotConfig) -> Vec<Box<dyn Strategy>> {
                     recenter_threshold_pct: 0.15,
                     vwap_entry_filter: false,
                     vwap_threshold_pct: 0.005,
+                    venue: "bybit".to_string(),
+                    respect_market_hours: false,
                 })));
                 info!(
                     lower = grid_cfg.lower_price,

@@ -179,6 +179,10 @@ kline_count         = 200         # candles to fetch for regime analysis
 # strategy_cooldown_ticks = 200   # ticks to wait before re-enabling a disabled strategy
 # strategies             = ["dca", "momentum"]  # which strategies to run
 #
+# Multi-symbol grid: run N grids concurrently on uncorrelated assets.
+# symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+# capital_per_symbol_pct = 0.30  # 30% of total equity per symbol (3 × 30% = 90% deployed)
+#
 # [orchestrator.dca]
 # buy_amount_quote       = 100.0  # USDT per DCA buy
 # interval_ticks         = 10     # buy every N ticks

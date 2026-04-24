@@ -9,10 +9,14 @@
 //! `{"status": "error", "message": "...", "error_type": "..."}`.
 
 use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono_tz::Asia::Kolkata;
 use reqwest::Client as Http;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{Config, REST_BASE};
@@ -333,6 +337,50 @@ impl Client {
     }
     pub fn http(&self) -> &Http {
         &self.http
+    }
+
+    // -- Token expiry ----------------------------------------------------------
+
+    /// Returns the UTC timestamp when today's Kite access token expires.
+    ///
+    /// Zerodha tokens expire at IST midnight (00:00 IST = 18:30 UTC previous day).
+    /// We compute "tomorrow 00:00 IST" and convert to UTC.
+    pub fn token_expires_at() -> DateTime<Utc> {
+        let now_ist = Utc::now().with_timezone(&Kolkata);
+        // Next midnight in IST = today's date + 1 day, at 00:00:00 IST
+        let tomorrow = now_ist
+            .date_naive()
+            .succ_opt()
+            .unwrap_or(now_ist.date_naive());
+        let midnight_ist = Kolkata
+            .with_ymd_and_hms(tomorrow.year(), tomorrow.month(), tomorrow.day(), 0, 0, 0)
+            .single()
+            .expect("valid IST midnight");
+        midnight_ist.with_timezone(&Utc)
+    }
+
+    /// Check whether the Kite access token is approaching expiry and call
+    /// `alert_fn` if so. If fewer than 10 minutes remain, also trips the kill
+    /// switch to prevent further order placement with a stale token.
+    ///
+    /// - < 60 min: calls `alert_fn` with a warning message
+    /// - < 10 min: additionally trips `kill`
+    pub fn check_token_expiry(kill: &Arc<AtomicBool>, alert_fn: impl Fn(String)) {
+        let expires_at = Self::token_expires_at();
+        let now = Utc::now();
+        let secs_remaining = (expires_at - now).num_seconds();
+        let mins_remaining = secs_remaining / 60;
+
+        if mins_remaining < 60 {
+            let msg = format!(
+                "⚠️ Zerodha token expires in {mins_remaining} minutes. Run zooni-kite-login to refresh."
+            );
+            alert_fn(msg);
+
+            if mins_remaining < 10 {
+                kill.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     fn auth_header(&self) -> Result<String> {

@@ -211,6 +211,8 @@ mod tests {
             use_post_only: true,
             vwap_entry_filter: false,
             vwap_threshold_pct: 0.005,
+            venue: "bybit".to_string(),
+            respect_market_hours: false,
         };
         Grid::new(&cfg, "0.01".into(), "0.000001".into(), 0.0001, 5.0)
     }
@@ -275,6 +277,8 @@ mod tests {
             use_post_only: true,
             vwap_entry_filter: false,
             vwap_threshold_pct: 0.005,
+            venue: "bybit".to_string(),
+            respect_market_hours: false,
         };
         let g = Grid::new(&cfg, "0.01".into(), "0.000001".into(), 0.0001, 5.0);
         assert!(g.validate_sizing().is_err());

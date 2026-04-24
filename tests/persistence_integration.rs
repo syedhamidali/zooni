@@ -121,6 +121,59 @@ fn bot_state_persistence() {
 }
 
 #[test]
+fn reconcile_orphaned_fill_marks_order_filled_in_db() {
+    // Scenario: bot crashed while an order was open. On restart we discover
+    // the exchange filled it. Simulate the reconciliation updating the DB.
+    let db = Db::open_in_memory().unwrap();
+
+    // Insert a single "Open" order as if placed before the crash.
+    let order = make_order("orphan-1", "BTCUSDT", Side::Buy, 65000.0, 2);
+    db.insert_order(&order).unwrap();
+
+    // Precondition: order shows as open.
+    let open_before = db.open_orders("BTCUSDT").unwrap();
+    assert_eq!(
+        open_before.len(),
+        1,
+        "should have one open order before reconcile"
+    );
+
+    // Simulate reconciliation: exchange reports the order as Filled at 65050.0.
+    let fill_price = 65050.0_f64;
+    let fill_qty = 0.001_f64;
+    db.mark_filled("orphan-1", fill_price, fill_qty).unwrap();
+    db.insert_fill(&FillRow {
+        order_id: "orphan-1".into(),
+        symbol: "BTCUSDT".into(),
+        side: Side::Buy,
+        price: fill_price,
+        qty: fill_qty,
+        notional: fill_price * fill_qty,
+        realised_pnl: 0.0,
+        filled_at: Utc::now(),
+    })
+    .unwrap();
+
+    // Postconditions: no more open orders, fill recorded.
+    let open_after = db.open_orders("BTCUSDT").unwrap();
+    assert_eq!(
+        open_after.len(),
+        0,
+        "order should be gone from open after reconcile"
+    );
+
+    let fill_count = db.total_fill_count("BTCUSDT").unwrap();
+    assert_eq!(fill_count, 1, "fill should be recorded");
+
+    // The fill notional should match.
+    let pnl = db.total_realised_pnl("BTCUSDT").unwrap();
+    assert!(
+        pnl.abs() < 1e-9,
+        "buy fill records 0 P&L (cost, not profit): {pnl}"
+    );
+}
+
+#[test]
 fn concurrent_symbols_are_isolated() {
     let db = Db::open_in_memory().unwrap();
 

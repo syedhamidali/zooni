@@ -30,6 +30,7 @@ Autonomous algorithmic trading bot for crypto and Indian equity markets. Multi-s
 - **Slippage Protection** — reject adverse fills, convert market orders to aggressive limits
 
 ### Infrastructure
+- **Multi-Symbol Orchestration** — run grids on multiple symbols simultaneously (BTC, ETH, SOL) with configurable `capital_per_symbol_pct` allocation via concurrent Tokio tasks
 - **Multi-Venue** — Bybit (crypto spot/perps) and Zerodha Kite Connect (Indian equity/F&O/MCX) via unified venue abstraction
 - **Yahoo Finance** — free historical data for backtesting and regime detection (no paid API needed)
 - **Risk Engine** — per-symbol, per-strategy, and portfolio-wide exposure limits with rolling 24h/7d loss windows (not calendar-day reset) and max drawdown
@@ -38,6 +39,11 @@ Autonomous algorithmic trading bot for crypto and Indian equity markets. Multi-s
 - **Telegram Bot** — remote `/status`, `/pnl`, `/alloc`, `/regime`, `/pause`, `/resume` + proactive alerts (regime changes, strategy disables, P&L thresholds)
 - **Webhook Alerts** — Slack, Discord, or any HTTP POST endpoint
 - **Backtesting** — realistic simulation with slippage (0.05–0.15%), partial fills (33%), maker/taker fee split, and 5% order rejection; walk-forward analysis, optimizer sweep, CSV export
+- **Market Hours Enforcement** — NSE/Zerodha grid skips ticks outside 09:15–15:30 IST, cancels buy orders 15 min before close; Bybit runs 24/7
+- **Startup Reconciliation** — on restart, queries Bybit for fills that occurred while bot was down and recovers orphaned fills into the DB
+- **Zerodha Token Expiry Alerts** — Telegram alert 60 min before midnight IST token expiry; kill switch at 10 min
+- **Live Risk Metrics** — rolling Sharpe, Sortino, max drawdown, win rate on TUI dashboard and Prometheus endpoint
+- **Tax & Reporting** — `zooni-report` generates monthly P&L statements and India tax reports (Section 115BBH crypto 30%, equity STCG 15%)
 - **Circuit Breaker** — pauses API calls after consecutive failures, auto-resets after cooldown
 - **Rate Limiting** — token bucket to stay within exchange API limits
 
@@ -105,6 +111,7 @@ cp config.example.toml config.toml
 | `zooni` | Main bot — grid, orchestrator, autopilot, funding-arb, TUI, Telegram |
 | `zooni-backtest` | Backtest strategies against CSV, synthetic, or Yahoo Finance data |
 | `zooni-optimize` | Walk-forward optimizer — finds best grid parameters, saves `optimal_params.json` |
+| `zooni-report` | Monthly P&L report + India tax breakdown (Section 115BBH crypto, equity STCG/LTCG) |
 | `zooni-scan` | One-shot market scanner — rank symbols by grid suitability |
 | `zooni-kite-login` | Zerodha Kite Connect daily login helper (OAuth token exchange) |
 

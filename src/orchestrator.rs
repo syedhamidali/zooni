@@ -33,6 +33,14 @@ pub struct OrchestratorConfig {
     pub strategy_cooldown_ticks: u64,
     #[serde(default = "default_strategies")]
     pub strategies: Vec<String>,
+    /// Symbols to trade simultaneously. Each symbol gets its own strategy set.
+    /// Default: ["BTCUSDT"]
+    #[serde(default = "default_symbols")]
+    pub symbols: Vec<String>,
+    /// Fraction of total equity allocated to each symbol's strategy set.
+    /// E.g. 0.30 means 30% of equity per symbol (3 × 30% = 90% deployed).
+    #[serde(default = "default_capital_per_symbol_pct")]
+    pub capital_per_symbol_pct: f64,
     #[serde(default)]
     pub dca: DcaOrchCfg,
     #[serde(default)]
@@ -194,6 +202,12 @@ fn default_pairs_hedge_ratio() -> f64 {
 fn default_strategies() -> Vec<String> {
     vec!["dca".to_string(), "momentum".to_string()]
 }
+fn default_symbols() -> Vec<String> {
+    vec!["BTCUSDT".to_string()]
+}
+fn default_capital_per_symbol_pct() -> f64 {
+    0.30
+}
 fn default_dca_amount() -> f64 {
     100.0
 }
@@ -252,6 +266,8 @@ impl Default for OrchestratorConfig {
             strategy_max_drawdown: default_strategy_max_drawdown(),
             strategy_cooldown_ticks: default_strategy_cooldown_ticks(),
             strategies: default_strategies(),
+            symbols: default_symbols(),
+            capital_per_symbol_pct: default_capital_per_symbol_pct(),
             dca: DcaOrchCfg::default(),
             momentum: MomentumOrchCfg::default(),
             grid: GridOrchCfg::default(),
@@ -275,6 +291,8 @@ pub struct StrategySlot {
 }
 
 pub struct Orchestrator {
+    /// The trading symbol this orchestrator instance manages (e.g. "BTCUSDT").
+    pub symbol: String,
     slots: Vec<StrategySlot>,
     config: OrchestratorConfig,
     tick_count: u64,
@@ -283,7 +301,11 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    pub fn new(strategies: Vec<Box<dyn Strategy>>, config: OrchestratorConfig) -> Self {
+    pub fn new(
+        symbol: impl Into<String>,
+        strategies: Vec<Box<dyn Strategy>>,
+        config: OrchestratorConfig,
+    ) -> Self {
         let n = strategies.len();
         let equal_alloc = if n > 0 { 1.0 / n as f64 } else { 0.0 };
 
@@ -302,6 +324,7 @@ impl Orchestrator {
             .collect();
 
         let mut orch = Self {
+            symbol: symbol.into(),
             slots,
             config,
             tick_count: 0,
@@ -804,7 +827,7 @@ mod tests {
 
     #[test]
     fn equal_allocation_on_start() {
-        let orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let orch = Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         let allocs = orch.allocations();
         assert!((allocs["grid"] - 0.5).abs() < 1e-9);
         assert!((allocs["momentum"] - 0.5).abs() < 1e-9);
@@ -812,7 +835,8 @@ mod tests {
 
     #[test]
     fn tick_scales_qty_by_allocation() {
-        let mut orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         let actions = orch.on_tick(&snap(), &[], None).unwrap();
 
         for ta in &actions {
@@ -834,7 +858,8 @@ mod tests {
 
     #[test]
     fn record_fill_updates_performance() {
-        let mut orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         orch.record_fill("grid", 15.0);
         orch.record_fill("grid", -3.0);
         orch.record_fill("momentum", 20.0);
@@ -851,6 +876,7 @@ mod tests {
     #[test]
     fn rebalance_shifts_allocation_to_winner() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 temperature: 0.5, // low temp = more exploitation
@@ -877,6 +903,7 @@ mod tests {
     #[test]
     fn rebalance_respects_min_allocation() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 min_allocation: 0.1,
@@ -902,6 +929,7 @@ mod tests {
     #[test]
     fn regime_bias_affects_allocation() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 temperature: 1.0,
@@ -925,6 +953,7 @@ mod tests {
     #[test]
     fn regime_trending_favors_momentum() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 temperature: 1.0,
@@ -947,6 +976,7 @@ mod tests {
     #[test]
     fn auto_rebalance_on_interval() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 rebalance_interval: 5,
@@ -975,7 +1005,8 @@ mod tests {
 
     #[test]
     fn disabled_strategy_skipped() {
-        let mut orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         orch.slots[1].enabled = false;
 
         let actions = orch.on_tick(&snap(), &[], None).unwrap();
@@ -998,7 +1029,8 @@ mod tests {
 
     #[test]
     fn active_count() {
-        let mut orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         assert_eq!(orch.active_count(), 2);
         orch.slots[0].enabled = false;
         assert_eq!(orch.active_count(), 1);
@@ -1006,14 +1038,16 @@ mod tests {
 
     #[test]
     fn persistence_round_trip() {
-        let mut orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         orch.record_fill("grid", 25.0);
         orch.record_fill("momentum", -5.0);
 
         let db = crate::persistence::Db::open_in_memory().unwrap();
         orch.save_state(&db).unwrap();
 
-        let mut orch2 = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch2 =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         orch2.load_state(&db).unwrap();
 
         let grid = orch2.performance("grid").unwrap();
@@ -1023,7 +1057,8 @@ mod tests {
 
     #[test]
     fn update_regime_priors_adjusts_weights() {
-        let mut orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let mut orch =
+            Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
 
         // Feed enough regime-tagged trades to trigger prior update
         for _ in 0..15 {
@@ -1045,7 +1080,7 @@ mod tests {
 
     #[test]
     fn all_performances_returns_all() {
-        let orch = Orchestrator::new(make_strategies(), OrchestratorConfig::default());
+        let orch = Orchestrator::new("BTCUSDT", make_strategies(), OrchestratorConfig::default());
         assert_eq!(orch.all_performances().len(), 2);
     }
 
@@ -1078,7 +1113,7 @@ mod tests {
         }
 
         let strategies: Vec<Box<dyn Strategy>> = vec![Box::new(StartStrategy)];
-        let mut orch = Orchestrator::new(strategies, OrchestratorConfig::default());
+        let mut orch = Orchestrator::new("BTCUSDT", strategies, OrchestratorConfig::default());
         let actions = orch.on_start(&snap()).unwrap();
         assert_eq!(actions.len(), 1);
         if let StrategyAction::PlaceOrder { qty, .. } = &actions[0].action {
@@ -1112,14 +1147,14 @@ mod tests {
 
         let strategies: Vec<Box<dyn Strategy>> =
             vec![Box::new(ShutdownStrategy), Box::new(ShutdownStrategy)];
-        let mut orch = Orchestrator::new(strategies, OrchestratorConfig::default());
+        let mut orch = Orchestrator::new("BTCUSDT", strategies, OrchestratorConfig::default());
         let actions = orch.on_shutdown().unwrap();
         assert_eq!(actions.len(), 2);
     }
 
     #[test]
     fn empty_orchestrator_handles_gracefully() {
-        let mut orch = Orchestrator::new(vec![], OrchestratorConfig::default());
+        let mut orch = Orchestrator::new("BTCUSDT", vec![], OrchestratorConfig::default());
         let actions = orch.on_tick(&snap(), &[], None).unwrap();
         assert!(actions.is_empty());
         orch.rebalance(); // should not panic
@@ -1129,6 +1164,7 @@ mod tests {
     #[test]
     fn high_temperature_gives_near_uniform_allocation() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 temperature: 10000.0, // very high = nearly uniform
@@ -1154,6 +1190,7 @@ mod tests {
     #[test]
     fn strategy_disabled_on_excessive_drawdown() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 strategy_max_drawdown: 0.10, // 10% threshold
@@ -1192,6 +1229,7 @@ mod tests {
     #[test]
     fn strategy_re_enabled_after_cooldown() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 strategy_max_drawdown: 0.10,
@@ -1237,6 +1275,7 @@ mod tests {
     #[test]
     fn healthy_strategy_stays_enabled() {
         let mut orch = Orchestrator::new(
+            "BTCUSDT",
             make_strategies(),
             OrchestratorConfig {
                 strategy_max_drawdown: 0.15, // 15% threshold

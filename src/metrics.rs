@@ -33,6 +33,15 @@ pub struct Metrics {
     pub api_retries: AtomicU64,
     pub ws_reconnects: AtomicU64,
     pub uptime_start: AtomicI64,
+    /// Risk-adjusted return gauges (stored as millionths for atomic I64 precision).
+    /// zooni_sharpe_ratio — rolling Sharpe (millionths; i64::MIN sentinel = no data).
+    pub sharpe_ratio_micro: AtomicI64,
+    /// zooni_sortino_ratio — rolling Sortino (millionths; i64::MIN sentinel = no data).
+    pub sortino_ratio_micro: AtomicI64,
+    /// zooni_max_drawdown_pct — max drawdown as % × 1000.
+    pub max_drawdown_milli_pct: AtomicI64,
+    /// zooni_win_rate_pct — win rate as % × 1000.
+    pub win_rate_milli_pct: AtomicI64,
     /// Time-series data for charts (protected by mutex).
     pub series: Mutex<DashboardSeries>,
 }
@@ -133,6 +142,9 @@ impl DashboardSeries {
     }
 }
 
+/// Sentinel value meaning "no data / fewer than 10 samples".
+const RATIO_NO_DATA: i64 = i64::MIN;
+
 impl Metrics {
     pub fn new() -> Self {
         let now = chrono::Utc::now().timestamp();
@@ -149,6 +161,10 @@ impl Metrics {
             api_retries: AtomicU64::new(0),
             ws_reconnects: AtomicU64::new(0),
             uptime_start: AtomicI64::new(now),
+            sharpe_ratio_micro: AtomicI64::new(RATIO_NO_DATA),
+            sortino_ratio_micro: AtomicI64::new(RATIO_NO_DATA),
+            max_drawdown_milli_pct: AtomicI64::new(0),
+            win_rate_milli_pct: AtomicI64::new(0),
             series: Mutex::new(DashboardSeries::new()),
         }
     }
@@ -182,6 +198,34 @@ impl Metrics {
 
     pub fn set_open_orders(&self, count: u64) {
         self.open_orders.store(count, Ordering::Relaxed);
+    }
+
+    /// Set rolling Sharpe ratio. Pass `None` when fewer than 10 data points.
+    pub fn set_sharpe_ratio(&self, sharpe: Option<f64>) {
+        let v = sharpe
+            .map(|s| (s * 1_000_000.0) as i64)
+            .unwrap_or(RATIO_NO_DATA);
+        self.sharpe_ratio_micro.store(v, Ordering::Relaxed);
+    }
+
+    /// Set rolling Sortino ratio. Pass `None` when fewer than 10 data points.
+    pub fn set_sortino_ratio(&self, sortino: Option<f64>) {
+        let v = sortino
+            .map(|s| (s * 1_000_000.0) as i64)
+            .unwrap_or(RATIO_NO_DATA);
+        self.sortino_ratio_micro.store(v, Ordering::Relaxed);
+    }
+
+    /// Set max drawdown as a fraction (0.0–1.0).
+    pub fn set_max_drawdown(&self, dd: f64) {
+        self.max_drawdown_milli_pct
+            .store((dd * 100.0 * 1000.0) as i64, Ordering::Relaxed);
+    }
+
+    /// Set win rate as a fraction (0.0–1.0).
+    pub fn set_win_rate(&self, wr: f64) {
+        self.win_rate_milli_pct
+            .store((wr * 100.0 * 1000.0) as i64, Ordering::Relaxed);
     }
 }
 
@@ -290,6 +334,23 @@ async fn live_handler(State(m): State<Arc<Metrics>>) -> Json<LiveData> {
 async fn metrics_handler(State(m): State<Arc<Metrics>>) -> String {
     let now = chrono::Utc::now().timestamp();
     let start = m.uptime_start.load(Ordering::Relaxed);
+
+    // Risk-adjusted metrics (emit NaN when no data yet)
+    let sharpe_raw = m.sharpe_ratio_micro.load(Ordering::Relaxed);
+    let sharpe_val = if sharpe_raw == RATIO_NO_DATA {
+        "NaN".to_string()
+    } else {
+        format!("{:.6}", sharpe_raw as f64 / 1_000_000.0)
+    };
+    let sortino_raw = m.sortino_ratio_micro.load(Ordering::Relaxed);
+    let sortino_val = if sortino_raw == RATIO_NO_DATA {
+        "NaN".to_string()
+    } else {
+        format!("{:.6}", sortino_raw as f64 / 1_000_000.0)
+    };
+    let max_dd_pct = m.max_drawdown_milli_pct.load(Ordering::Relaxed) as f64 / 1000.0;
+    let win_rate_pct = m.win_rate_milli_pct.load(Ordering::Relaxed) as f64 / 1000.0;
+
     format!(
         "# HELP trading_bot_fills_total Total number of fills\n\
          # TYPE trading_bot_fills_total counter\n\
@@ -317,7 +378,19 @@ async fn metrics_handler(State(m): State<Arc<Metrics>>) -> String {
          trading_bot_open_orders {}\n\
          # HELP trading_bot_uptime_seconds Bot uptime in seconds\n\
          # TYPE trading_bot_uptime_seconds gauge\n\
-         trading_bot_uptime_seconds {}\n",
+         trading_bot_uptime_seconds {}\n\
+         # HELP zooni_sharpe_ratio Rolling annualized Sharpe ratio\n\
+         # TYPE zooni_sharpe_ratio gauge\n\
+         zooni_sharpe_ratio {}\n\
+         # HELP zooni_sortino_ratio Rolling annualized Sortino ratio\n\
+         # TYPE zooni_sortino_ratio gauge\n\
+         zooni_sortino_ratio {}\n\
+         # HELP zooni_max_drawdown_pct Maximum drawdown as percentage\n\
+         # TYPE zooni_max_drawdown_pct gauge\n\
+         zooni_max_drawdown_pct {:.3}\n\
+         # HELP zooni_win_rate_pct Win rate as percentage\n\
+         # TYPE zooni_win_rate_pct gauge\n\
+         zooni_win_rate_pct {:.3}\n",
         m.fills_total.load(Ordering::Relaxed),
         m.buy_fills.load(Ordering::Relaxed),
         m.sell_fills.load(Ordering::Relaxed),
@@ -327,6 +400,10 @@ async fn metrics_handler(State(m): State<Arc<Metrics>>) -> String {
         m.equity_cents.load(Ordering::Relaxed) as f64 / 100.0,
         m.open_orders.load(Ordering::Relaxed),
         now - start,
+        sharpe_val,
+        sortino_val,
+        max_dd_pct,
+        win_rate_pct,
     )
 }
 

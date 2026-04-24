@@ -187,6 +187,38 @@ fn is_us_equity_holiday(d: NaiveDate) -> bool {
         .any(|&(y, m, day)| d.year() == y && d.month() == m && d.day() == day)
 }
 
+/// Map a venue/exchange string to the appropriate `Session`.
+///
+/// Recognised venue identifiers (case-insensitive):
+/// - `"zerodha"`, `"nse"`, `"bse"`, `"nfo"` → `Session::NseEquity`
+/// - `"bybit"`, `"crypto"`, `"binance"`, `"okx"` → `Session::Crypto`
+/// - `"mcx"` → `Session::Mcx`
+/// - `"us"`, `"nyse"`, `"nasdaq"` → `Session::UsEquity`
+/// - anything else → `Session::Crypto` (safe default; 24/7 venues never block)
+fn session_for_venue(venue: &str) -> Session {
+    match venue.to_lowercase().as_str() {
+        "zerodha" | "nse" | "bse" | "nfo" | "nse_equity" => Session::NseEquity,
+        "mcx" => Session::Mcx,
+        "us" | "nyse" | "nasdaq" | "us_equity" => Session::UsEquity,
+        // Bybit, Binance, OKX, "crypto", or anything unrecognised → 24/7
+        _ => Session::Crypto,
+    }
+}
+
+/// Returns `true` when the given venue is currently open for trading.
+///
+/// `venue` is matched case-insensitively against well-known exchange names.
+/// Unknown venues are treated as 24/7 (safe default: never blocks trading).
+pub fn is_market_open<T: TimeZone>(venue: &str, now: chrono::DateTime<T>) -> bool {
+    session_for_venue(venue).is_open_at(now)
+}
+
+/// Minutes remaining until the session closes, or `None` for 24/7 venues or
+/// when the market is currently closed.
+pub fn minutes_until_close<T: TimeZone>(venue: &str, now: chrono::DateTime<T>) -> Option<i64> {
+    session_for_venue(venue).minutes_until_close(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +302,50 @@ mod tests {
     fn mcx_should_exit_at_2320_ist() {
         let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 23, 20, 0).unwrap();
         assert!(Session::Mcx.should_exit_intraday(t));
+    }
+
+    // --- Free-function API tests ---
+
+    #[test]
+    fn market_open_during_nse_hours() {
+        // Thursday 2026-04-23 10:30 IST — normal trading day
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 10, 30, 0).unwrap();
+        assert!(super::is_market_open("zerodha", t));
+        assert!(super::is_market_open("NSE", t));
+    }
+
+    #[test]
+    fn market_closed_on_weekend() {
+        // Saturday 2026-04-25 10:30 IST
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 25, 10, 30, 0).unwrap();
+        assert!(!super::is_market_open("zerodha", t));
+        assert!(!super::is_market_open("NSE", t));
+    }
+
+    #[test]
+    fn market_closed_before_open() {
+        // Thursday 2026-04-23 08:00 IST — before 09:15
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 8, 0, 0).unwrap();
+        assert!(!super::is_market_open("zerodha", t));
+    }
+
+    #[test]
+    fn bybit_always_open() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 25, 3, 0, 0).unwrap(); // weekend 3 AM
+        assert!(super::is_market_open("bybit", t));
+        assert!(super::is_market_open("crypto", t));
+    }
+
+    #[test]
+    fn minutes_until_close_nse_venue() {
+        // Thursday 2026-04-23 14:00 IST → 90 minutes until 15:30
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
+        assert_eq!(super::minutes_until_close("zerodha", t), Some(90));
+    }
+
+    #[test]
+    fn minutes_until_close_bybit_none() {
+        let t = Kolkata.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
+        assert_eq!(super::minutes_until_close("bybit", t), None);
     }
 }
