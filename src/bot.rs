@@ -387,7 +387,67 @@ async fn run_inner(
     };
 
     // -- 13b. Place initial grid (only for levels not already occupied) ---------
+    // VWAP entry filter: if enabled, only place the initial grid when the current
+    // price is within vwap_threshold_pct of VWAP computed from recent klines.
+    let vwap_allows_entry = if cfg.grid.vwap_entry_filter && !dry_run {
+        match venue.klines(&cfg.grid.symbol, "60", 100).await {
+            Ok(klines) if !klines.is_empty() => {
+                let highs: Vec<f64> = klines.iter().map(|k| k.high).collect();
+                let lows: Vec<f64> = klines.iter().map(|k| k.low).collect();
+                let closes: Vec<f64> = klines.iter().map(|k| k.close).collect();
+                let volumes: Vec<f64> = klines.iter().map(|k| k.volume).collect();
+                match crate::indicators::vwap(&highs, &lows, &closes, &volumes) {
+                    Some(vwap_val) => {
+                        let deviation_pct = (mid - vwap_val).abs() / vwap_val;
+                        if deviation_pct <= cfg.grid.vwap_threshold_pct {
+                            info!(
+                                mid,
+                                vwap = vwap_val,
+                                deviation_pct = format!("{:.2}%", deviation_pct * 100.0),
+                                "VWAP entry filter: price is near VWAP, proceeding with grid placement",
+                            );
+                            true
+                        } else {
+                            tracing::debug!(
+                                "Skipping grid placement: price {:.2} is {:.2}% from VWAP {:.2}",
+                                mid,
+                                deviation_pct * 100.0,
+                                vwap_val
+                            );
+                            warn!(
+                                mid,
+                                vwap = vwap_val,
+                                deviation_pct = format!("{:.2}%", deviation_pct * 100.0),
+                                threshold_pct = format!("{:.2}%", cfg.grid.vwap_threshold_pct * 100.0),
+                                "VWAP entry filter: price too far from VWAP — deferring grid placement",
+                            );
+                            false
+                        }
+                    }
+                    None => {
+                        warn!("VWAP entry filter: could not compute VWAP from klines — proceeding anyway");
+                        true
+                    }
+                }
+            }
+            Ok(_) => {
+                warn!("VWAP entry filter: klines returned empty — proceeding anyway");
+                true
+            }
+            Err(e) => {
+                warn!(err = %e, "VWAP entry filter: klines fetch failed — proceeding anyway");
+                true
+            }
+        }
+    } else {
+        // Filter disabled or dry-run: always allow placement
+        true
+    };
+
     if grid.orders.is_empty() {
+        if !vwap_allows_entry {
+            info!("VWAP entry filter active: skipping initial grid placement this cycle");
+        } else {
         let plan = grid.plan_initial(mid);
         info!(plan_size = plan.len(), "placing initial grid");
         for p in &plan {
@@ -397,8 +457,12 @@ async fn run_inner(
             place_with_risk(&ctx, &mut grid, p).await;
         }
         info!(open_count = grid.orders.len(), "initial placement complete");
+        }
     } else {
         // Fill gaps in the grid that aren't occupied
+        if !vwap_allows_entry {
+            info!("VWAP entry filter active: skipping gap-fill placement this cycle");
+        } else {
         let plan = grid.plan_initial(mid);
         let occupied: HashSet<usize> = grid.orders.keys().copied().collect();
         let gaps: Vec<_> = plan
@@ -413,6 +477,7 @@ async fn run_inner(
                 }
                 place_with_risk(&ctx, &mut grid, p).await;
             }
+        }
         }
     }
 
