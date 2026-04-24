@@ -46,6 +46,8 @@ pub struct PairsConfig {
     pub position_size_quote: f64,
     pub max_open_pairs: usize,
     pub hedge_ratio_method: HedgeMethod,
+    /// Minimum Pearson correlation required to allow trades. Default 0.7.
+    pub min_correlation: f64,
 }
 
 impl Default for PairsConfig {
@@ -60,6 +62,7 @@ impl Default for PairsConfig {
             position_size_quote: 50_000.0,
             max_open_pairs: 1,
             hedge_ratio_method: HedgeMethod::Fixed(1.0),
+            min_correlation: 0.7,
         }
     }
 }
@@ -256,6 +259,15 @@ impl Strategy for PairsStrategy {
         }
 
         if z.abs() <= self.config.entry_z_score {
+            return Ok(vec![StrategyAction::None]);
+        }
+
+        // Require minimum correlation between the two legs before entering
+        if let Some(corr) = indicators::pearson_correlation(&self.prices_a, &self.prices_b) {
+            if corr < self.config.min_correlation {
+                return Ok(vec![StrategyAction::None]);
+            }
+        } else {
             return Ok(vec![StrategyAction::None]);
         }
 

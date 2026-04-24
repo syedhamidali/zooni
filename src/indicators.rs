@@ -240,6 +240,34 @@ pub fn std_dev(data: &[f64]) -> f64 {
     variance.sqrt()
 }
 
+/// Pearson correlation coefficient between two equal-length slices.
+/// Returns `None` if either slice has fewer than 2 elements or if standard deviation is zero.
+pub fn pearson_correlation(a: &[f64], b: &[f64]) -> Option<f64> {
+    let n = a.len().min(b.len());
+    if n < 2 {
+        return None;
+    }
+    let a = &a[a.len() - n..];
+    let b = &b[b.len() - n..];
+    let mean_a = a.iter().sum::<f64>() / n as f64;
+    let mean_b = b.iter().sum::<f64>() / n as f64;
+    let mut cov = 0.0;
+    let mut var_a = 0.0;
+    let mut var_b = 0.0;
+    for i in 0..n {
+        let da = a[i] - mean_a;
+        let db = b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+    let denom = (var_a * var_b).sqrt();
+    if denom < 1e-15 {
+        return None;
+    }
+    Some(cov / denom)
+}
+
 /// Returns (mean, std_dev) for log returns — used for Sharpe ratio and volatility estimation.
 pub fn log_return_stats(closes: &[f64]) -> Option<(f64, f64)> {
     if closes.len() < 2 {
