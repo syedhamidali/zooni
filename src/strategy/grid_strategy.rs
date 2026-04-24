@@ -10,6 +10,7 @@ use anyhow::Result;
 
 use super::{FillEvent, MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::grid::compute_levels;
+use crate::regime::Regime;
 use crate::types::Side;
 
 #[derive(Debug, Clone)]
@@ -19,15 +20,49 @@ pub struct GridStrategyConfig {
     pub upper_price: f64,
     pub levels: usize,
     pub qty_per_level: f64,
+    /// Cancel all buy orders when regime transitions from Ranging to Trending.
+    pub cancel_buys_on_trend: bool,
+    /// Automatically re-center the grid when price escapes the band by this fraction.
+    /// Set to 0.0 to disable.
+    pub auto_recenter: bool,
+    /// Fraction beyond the upper/lower band that triggers re-centering (e.g. 0.15 = 15%).
+    pub recenter_threshold_pct: f64,
+}
+
+impl Default for GridStrategyConfig {
+    fn default() -> Self {
+        Self {
+            symbol: String::new(),
+            lower_price: 0.0,
+            upper_price: 0.0,
+            levels: 10,
+            qty_per_level: 0.0,
+            cancel_buys_on_trend: true,
+            auto_recenter: false,
+            recenter_threshold_pct: 0.15,
+        }
+    }
 }
 
 pub struct GridStrategy {
     symbol: String,
+    lower_price: f64,
+    upper_price: f64,
     levels: Vec<f64>,
     qty_base: f64,
     last_price: Option<f64>,
     bought_at: HashSet<usize>,
     total_cycles: u64,
+    /// Most recent regime (used to detect transitions for buy cancellation).
+    last_regime: Option<Regime>,
+    /// Cancel buy orders on trend breakout from ranging.
+    cancel_buys_on_trend: bool,
+    /// Enable automatic re-centering when price escapes grid band.
+    auto_recenter: bool,
+    /// Fraction beyond upper/lower band that triggers re-centering.
+    recenter_threshold_pct: f64,
+    /// Most recent ATR value for re-centering half-range calculation.
+    last_atr: f64,
 }
 
 impl GridStrategy {
@@ -35,12 +70,46 @@ impl GridStrategy {
         let levels = compute_levels(config.lower_price, config.upper_price, config.levels);
         Self {
             symbol: config.symbol,
+            lower_price: config.lower_price,
+            upper_price: config.upper_price,
             levels,
             qty_base: config.qty_per_level,
             last_price: None,
             bought_at: HashSet::new(),
             total_cycles: 0,
+            last_regime: None,
+            cancel_buys_on_trend: config.cancel_buys_on_trend,
+            auto_recenter: config.auto_recenter,
+            recenter_threshold_pct: config.recenter_threshold_pct,
+            last_atr: 0.0,
         }
+    }
+
+    /// Update the regime known to this strategy. Returns any actions triggered by a transition.
+    ///
+    /// When regime changes from Ranging → TrendingUp/TrendingDown and `cancel_buys_on_trend`
+    /// is enabled, all open buy orders are cancelled to prevent accumulating into a trend.
+    pub fn apply_regime(&mut self, regime: Regime, atr: f64) -> Vec<StrategyAction> {
+        self.last_atr = atr;
+        let prev = self.last_regime.take();
+        self.last_regime = Some(regime);
+
+        // Detect transition from Ranging to a trending regime
+        if self.cancel_buys_on_trend {
+            let was_ranging = matches!(prev, Some(Regime::Ranging));
+            let now_trending =
+                matches!(regime, Regime::TrendingUp | Regime::TrendingDown);
+            if was_ranging && now_trending {
+                tracing::info!(
+                    "Trend breakout detected, cancelling buy orders to prevent accumulating into trend"
+                );
+                return vec![StrategyAction::CancelAll {
+                    symbol: self.symbol.clone(),
+                }];
+            }
+        }
+
+        vec![]
     }
 }
 
@@ -65,6 +134,74 @@ impl Strategy for GridStrategy {
 
         let price = snapshot.last;
         let mut actions = Vec::new();
+
+        // Auto re-centering: if price has escaped the grid band by more than
+        // recenter_threshold_pct, cancel all orders and rebuild around current price.
+        if self.auto_recenter && self.recenter_threshold_pct > 0.0 {
+            let threshold = self.recenter_threshold_pct;
+            let price_above = price > self.upper_price * (1.0 + threshold);
+            let price_below = price < self.lower_price * (1.0 - threshold);
+
+            if price_above || price_below {
+                let old_lower = self.lower_price;
+                let old_upper = self.upper_price;
+
+                // Recalculate range: center = current_price, half_range = 2 * ATR
+                let half_range = if self.last_atr > 0.0 {
+                    2.0 * self.last_atr
+                } else {
+                    // Fallback: keep same width if ATR unavailable
+                    (old_upper - old_lower) / 2.0
+                };
+                let new_lower = (price - half_range).max(0.01);
+                let new_upper = price + half_range;
+
+                tracing::info!(
+                    symbol = %self.symbol,
+                    old_lower,
+                    old_upper,
+                    new_lower,
+                    new_upper,
+                    current_price = price,
+                    "grid auto re-center: price escaped band, rebuilding grid around current price",
+                );
+
+                self.lower_price = new_lower;
+                self.upper_price = new_upper;
+                let n_levels = self.levels.len();
+                self.levels = compute_levels(new_lower, new_upper, n_levels);
+                self.bought_at.clear();
+
+                // Cancel all existing orders and let the orchestrator re-place
+                actions.push(StrategyAction::CancelAll {
+                    symbol: self.symbol.clone(),
+                });
+
+                // Place new grid orders for the recalculated levels
+                for (i, &level) in self.levels.iter().enumerate() {
+                    let side = if level < price {
+                        Side::Buy
+                    } else if level > price {
+                        Side::Sell
+                    } else {
+                        continue; // skip level exactly at current price
+                    };
+                    if side == Side::Buy {
+                        self.bought_at.insert(i);
+                    }
+                    actions.push(StrategyAction::PlaceOrder {
+                        symbol: self.symbol.clone(),
+                        side,
+                        price: level,
+                        qty: self.qty_base,
+                        order_type: OrderType::Limit,
+                    });
+                }
+
+                self.last_price = Some(price);
+                return Ok(actions);
+            }
+        }
 
         if let Some(last) = self.last_price {
             for (i, &level) in self.levels.iter().enumerate() {

@@ -440,7 +440,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                                                 match with_retry(&retry_policy, "place_replacement", || {
                                                     client.place_spot_order(
                                                         &ws_symbol, plan.side, "Limit",
-                                                        &qty_str, Some(&price_str), Some(&link_clone),
+                                                        &qty_str, Some(&price_str), Some(&link_clone), false,
                                                     )
                                                 }).await {
                                                     Ok(resp) => {
@@ -623,6 +623,10 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
         cancel_existing_on_start: true,
         auto_rebalance: true,
         trailing_profit_threshold: 0.0,
+        cancel_buys_on_trend: bot_cfg.grid.cancel_buys_on_trend,
+        auto_recenter: bot_cfg.grid.auto_recenter,
+        recenter_threshold_pct: bot_cfg.grid.recenter_threshold_pct,
+        use_post_only: bot_cfg.grid.use_post_only,
     };
 
     let mut g = Grid::new(
@@ -695,6 +699,7 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
                     &qty_str,
                     Some(&price_str),
                     Some(&link_clone),
+                    false,
                 )
             })
             .await
@@ -868,6 +873,7 @@ async fn reconcile_grid(
                     &qty_str,
                     Some(&price_str),
                     Some(&link_clone),
+                    false,
                 )
             })
             .await

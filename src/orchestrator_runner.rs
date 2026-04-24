@@ -466,7 +466,7 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
                             }
                         };
                         let result = venue
-                            .place_order(sym, *side, kind, &qty_str, price_arg, None)
+                            .place_order(sym, *side, kind, &qty_str, price_arg, None, false)
                             .await;
 
                         match result {
@@ -786,6 +786,9 @@ fn build_strategies(symbol: &str, cfg: &BotConfig) -> Vec<Box<dyn Strategy>> {
                     upper_price: grid_cfg.upper_price,
                     levels: grid_cfg.levels,
                     qty_per_level: grid_cfg.qty_per_level,
+                    cancel_buys_on_trend: true,
+                    auto_recenter: false,
+                    recenter_threshold_pct: 0.15,
                 })));
                 info!(
                     lower = grid_cfg.lower_price,

@@ -24,6 +24,7 @@ use crate::telegram::TelegramBot;
 use crate::tui::{GridLevelDisplay, TuiState};
 use crate::types::{OrderKind, Side};
 use crate::venue::Venue;
+use crate::venues::bybit::rest::Client as BybitRestClient;
 use crate::ws_private::{self, WsEvent};
 
 /// Shared context passed to helper functions instead of many individual args.
@@ -37,6 +38,10 @@ struct BotCtx<'a> {
     breaker: &'a Arc<CircuitBreaker>,
     dry_run: bool,
     metrics: &'a Arc<Metrics>,
+    /// When true, all limit orders are sent as PostOnly to capture maker fees (0.02%).
+    use_post_only: bool,
+    /// Tick size string (e.g. "0.01") used for adjusting price on PostOnly rejection.
+    tick_size: String,
 }
 
 /// Run the bot, optionally sharing TUI state for dashboard rendering.
@@ -377,6 +382,8 @@ async fn run_inner(
         breaker: &breaker,
         dry_run,
         metrics: &metrics,
+        use_post_only: cfg.grid.use_post_only,
+        tick_size: tick_size.clone(),
     };
 
     // -- 13b. Place initial grid (only for levels not already occupied) ---------
@@ -446,6 +453,10 @@ async fn run_inner(
     let regime_check_interval = (300 / cfg.grid.poll_secs).max(1);
     let mut regime_check_counter: u64 = 0;
     let mut regime_paused = false; // true if grid is paused due to unfavorable regime
+    // Last observed regime for hysteresis and transition detection
+    let mut last_bot_regime: Option<crate::regime::Regime> = None;
+    // Most recent ATR value (updated each regime check) for grid re-centering half-range.
+    let mut last_atr: f64 = 0.0;
 
     loop {
         tokio::select! {
@@ -484,6 +495,71 @@ async fn run_inner(
                                         series.regime_confidence = analysis.confidence;
                                         series.grid_suitable = analysis.grid_suitable;
                                     }
+
+                                    // Detect Ranging → Trending transition; cancel buy orders to
+                                    // prevent accumulating base asset into a directional move.
+                                    if cfg.grid.cancel_buys_on_trend {
+                                        let was_ranging = matches!(
+                                            last_bot_regime,
+                                            Some(crate::regime::Regime::Ranging)
+                                        );
+                                        let now_trending = matches!(
+                                            analysis.regime,
+                                            crate::regime::Regime::TrendingUp
+                                                | crate::regime::Regime::TrendingDown
+                                        );
+                                        if was_ranging && now_trending {
+                                            tracing::info!(
+                                                "Trend breakout detected, cancelling buy orders to prevent accumulating into trend"
+                                            );
+                                            // Collect buy levels to cancel; keep sell orders open
+                                            let buy_levels: Vec<(usize, String)> = grid
+                                                .orders
+                                                .iter()
+                                                .filter(|(_, o)| matches!(o.side, Side::Buy))
+                                                .map(|(&lvl, o)| (lvl, o.order_id.clone()))
+                                                .collect();
+                                            for (lvl, order_id) in buy_levels {
+                                                match venue
+                                                    .cancel_order(&cfg.grid.symbol, &order_id)
+                                                    .await
+                                                {
+                                                    Ok(()) => {
+                                                        info!(
+                                                            level = lvl,
+                                                            %order_id,
+                                                            "buy order cancelled on trend breakout",
+                                                        );
+                                                        grid.orders.remove(&lvl);
+                                                        let _ = db
+                                                            .lock()
+                                                            .await
+                                                            .mark_cancelled(&order_id);
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(
+                                                            level = lvl,
+                                                            %order_id,
+                                                            err = %e,
+                                                            "failed to cancel buy order on trend breakout",
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            alerter
+                                                .lifecycle(&format!(
+                                                    "⚡ Trend breakout ({}): cancelled buy orders to avoid accumulation",
+                                                    analysis.regime,
+                                                ))
+                                                .await;
+                                        }
+                                    }
+
+                                    last_bot_regime = Some(analysis.regime);
+                                    if analysis.atr > 0.0 {
+                                        last_atr = analysis.atr;
+                                    }
+
                                     if !analysis.grid_suitable && !regime_paused {
                                         regime_paused = true;
                                         warn!(regime = %analysis.regime, "unfavorable regime — pausing new orders");
@@ -745,6 +821,77 @@ async fn run_inner(
                         }
                     }
                 }
+
+                // Auto re-centering: if price escapes the grid band by recenter_threshold_pct,
+                // cancel all orders and rebuild the grid centered on current price using 2*ATR
+                // as the half-range (ATR sourced from the most recent regime analysis).
+                if cfg.grid.auto_recenter
+                    && !dry_run
+                    && let Ok(ticker) = venue.ticker(&cfg.grid.symbol).await
+                {
+                    let price = ticker.last_price;
+                    let lower = *grid.levels.first().unwrap_or(&0.0);
+                    let upper = *grid.levels.last().unwrap_or(&0.0);
+                    let threshold = cfg.grid.recenter_threshold_pct;
+                    let price_above = upper > 0.0 && price > upper * (1.0 + threshold);
+                    let price_below = lower > 0.0 && price < lower * (1.0 - threshold);
+
+                    if price_above || price_below {
+                        // half_range = 2 * ATR; fall back to half the existing range if ATR unavailable
+                        let half_range = if last_atr > 0.0 {
+                            2.0 * last_atr
+                        } else {
+                            (upper - lower) / 2.0
+                        };
+                        let new_lower = (price - half_range).max(0.01);
+                        let new_upper = price + half_range;
+
+                        info!(
+                            price,
+                            old_lower = lower,
+                            old_upper = upper,
+                            new_lower,
+                            new_upper,
+                            atr = last_atr,
+                            "auto re-center: price escaped grid band, rebuilding",
+                        );
+
+                        match venue.cancel_all_orders(&cfg.grid.symbol).await {
+                            Err(e) => {
+                                warn!(err = %e, "cancel_all for auto-recenter failed");
+                            }
+                            Ok(()) => {
+                                // Mark all orders cancelled in DB
+                                {
+                                    let db_guard = db.lock().await;
+                                    for (_, order) in grid.orders.drain() {
+                                        let _ = db_guard.mark_cancelled(&order.order_id);
+                                    }
+                                }
+
+                                // Recalculate levels and place new grid
+                                let n_levels = grid.levels.len();
+                                grid.levels = crate::grid::compute_levels(new_lower, new_upper, n_levels);
+                                let plan = grid.plan_initial(price);
+                                info!(
+                                    plan_size = plan.len(),
+                                    "placing re-centered grid orders",
+                                );
+                                for p in &plan {
+                                    if kill.load(Ordering::SeqCst) {
+                                        break;
+                                    }
+                                    place_with_risk(&ctx, &mut grid, p).await;
+                                }
+                                alerter
+                                    .lifecycle(&format!(
+                                        "Grid re-centered around {price:.2}: {new_lower:.2}–{new_upper:.2} (was {lower:.2}–{upper:.2})"
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
+                }
             }
 
             event = ws_rx.recv() => {
@@ -954,6 +1101,8 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
         breaker,
         dry_run,
         metrics,
+        use_post_only,
+        tick_size,
     } = ctx;
     let price: f64 = p.price_str.parse().unwrap_or(0.0);
     let qty: f64 = p.qty_str.parse().unwrap_or(0.0);
@@ -1041,8 +1190,13 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
     let qty_str = p.qty_str.clone();
     let price_str = p.price_str.clone();
     let link_id_clone = link_id.clone();
+    let post_only = *use_post_only;
 
-    match with_retry(retry_policy, "place_order", || {
+    // Attempt to place the order with PostOnly when configured. If Bybit rejects
+    // because the order would fill as taker (error 170213), wait 200ms, adjust
+    // the price by one tick further away from the market, and retry once.
+    // If the retry also fails, log a warning and skip this level this cycle.
+    let first_result = with_retry(retry_policy, "place_order", || {
         venue.place_order(
             symbol,
             side,
@@ -1050,10 +1204,71 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
             &qty_str,
             Some(price_str.as_str()),
             Some(link_id_clone.as_str()),
+            post_only,
         )
     })
-    .await
-    {
+    .await;
+
+    let final_result = match first_result {
+        Ok(r) => Ok(r),
+        Err(ref e) if post_only && BybitRestClient::is_post_only_rejection(e) => {
+            warn!(
+                level = p.level_index,
+                price = %price_str,
+                "PostOnly rejected (would fill as taker) — adjusting price by one tick and retrying"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            let tick_val: f64 = tick_size.parse().unwrap_or(0.0);
+            // Move away from market: buys go lower, sells go higher
+            let adjusted_price = match side {
+                Side::Buy => price - tick_val,
+                Side::Sell => price + tick_val,
+            };
+            let adjusted_price_str = crate::grid::format_to_increment(adjusted_price, tick_size);
+            let retry_link_id = format!(
+                "grid-{}-{}-{}",
+                symbol,
+                p.level_index,
+                uuid::Uuid::new_v4().as_simple()
+            );
+            let adj_clone = adjusted_price_str.clone();
+            let lid_clone = retry_link_id.clone();
+
+            match venue
+                .place_order(
+                    symbol,
+                    side,
+                    OrderKind::Limit,
+                    &qty_str,
+                    Some(adj_clone.as_str()),
+                    Some(lid_clone.as_str()),
+                    post_only,
+                )
+                .await
+            {
+                Ok(r) => {
+                    info!(
+                        level = p.level_index,
+                        adjusted_price = %adjusted_price_str,
+                        "PostOnly retry succeeded"
+                    );
+                    Ok(r)
+                }
+                Err(retry_err) => {
+                    warn!(
+                        level = p.level_index,
+                        err = %retry_err,
+                        "PostOnly retry also rejected — skipping level this cycle"
+                    );
+                    return; // skip level silently
+                }
+            }
+        }
+        Err(e) => Err(e),
+    };
+
+    match final_result {
         Ok(resp) => {
             info!(
                 level = p.level_index,
@@ -1062,6 +1277,7 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
                 qty = %p.qty_str,
                 order_id = %resp.order_id,
                 link_id = %link_id,
+                post_only,
                 "order placed",
             );
             grid.orders.insert(

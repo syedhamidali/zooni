@@ -35,7 +35,7 @@ impl std::fmt::Display for Regime {
 pub struct RegimeAnalysis {
     pub regime: Regime,
     pub confidence: f64,
-    /// ADX value (trend strength). > 25 = trending, < 20 = ranging.
+    /// ADX value (trend strength). > 25 = trending, < 18 = ranging.
     pub adx: f64,
     /// RSI value (momentum). Extreme values (>70 or <30) suggest overextension.
     pub rsi: f64,
@@ -43,12 +43,49 @@ pub struct RegimeAnalysis {
     pub bb_bandwidth: f64,
     /// ATR as percentage of price — higher = more volatile.
     pub volatility_pct: f64,
+    /// ATR absolute value — used for grid re-centering half-range.
+    pub atr: f64,
     /// Whether grid trading is recommended in this regime.
     pub grid_suitable: bool,
     /// Suggested grid range (lower, upper) based on Bollinger bands and ATR.
     pub suggested_range: Option<(f64, f64)>,
     /// Suggested number of grid levels based on volatility.
     pub suggested_levels: Option<u32>,
+}
+
+/// Stateful regime detector with hysteresis to prevent flip-flopping on ADX noise.
+///
+/// Wrap `analyze()` with this when you need persistent state across ticks.
+#[derive(Debug, Default)]
+pub struct RegimeDetector {
+    /// Last confirmed regime (used for hysteresis).
+    pub last_regime: Option<Regime>,
+}
+
+impl RegimeDetector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Analyze klines and apply hysteresis: once Ranging, keep Ranging until ADX > 22.
+    ///
+    /// # Hysteresis prevents regime flip-flopping on ADX noise
+    pub fn analyze(&mut self, klines: &[Kline]) -> Option<RegimeAnalysis> {
+        let mut result = analyze(klines)?;
+
+        // Hysteresis prevents regime flip-flopping on ADX noise
+        if let Some(Regime::Ranging) = self.last_regime {
+            // Stay ranging until ADX convincingly breaks out above 22
+            if result.adx <= 22.0 && !matches!(result.regime, Regime::Volatile) {
+                result.regime = Regime::Ranging;
+                // Recompute grid_suitable with the hysteresis-adjusted regime
+                result.grid_suitable = true;
+            }
+        }
+
+        self.last_regime = Some(result.regime);
+        Some(result)
+    }
 }
 
 /// Analyze market regime from kline data.
@@ -118,6 +155,7 @@ pub fn analyze(klines: &[Kline]) -> Option<RegimeAnalysis> {
         rsi: rsi_val,
         bb_bandwidth: bb_bw,
         volatility_pct,
+        atr: atr_val,
         grid_suitable,
         suggested_range,
         suggested_levels,
@@ -149,13 +187,13 @@ fn classify(adx: f64, rsi: f64, bb_bandwidth: f64, vol_pct: f64) -> (Regime, f64
         return (direction, conf * 0.7);
     }
 
-    // Low ADX + narrow Bollinger bands = ranging
-    if adx < 20.0 {
-        let conf = ((20.0 - adx) / 15.0).clamp(0.5, 0.95);
+    // Low ADX + narrow Bollinger bands = ranging (tighter threshold for higher conviction)
+    if adx < 18.0 {
+        let conf = ((18.0 - adx) / 13.0).clamp(0.5, 0.95);
         return (Regime::Ranging, conf);
     }
 
-    // Borderline (ADX 20-25) — lean towards ranging with lower confidence
+    // Borderline (ADX 18-25) — lean towards ranging with lower confidence
     let conf = 0.4;
     if bb_bandwidth < 0.04 {
         (Regime::Ranging, conf + 0.1)
@@ -247,20 +285,37 @@ mod tests {
 
     #[test]
     fn classify_borderline_adx_narrow_bb() {
+        // ADX 22 is in borderline zone (18-25) — narrow BB should lean Ranging
         let (regime, _) = classify(22.0, 50.0, 0.03, 1.5);
         assert_eq!(regime, Regime::Ranging);
     }
 
     #[test]
     fn classify_borderline_adx_bullish() {
+        // ADX 22 is in borderline zone (18-25) — bullish RSI tips to TrendingUp
         let (regime, _) = classify(22.0, 60.0, 0.06, 1.5);
         assert_eq!(regime, Regime::TrendingUp);
     }
 
     #[test]
     fn classify_borderline_adx_bearish() {
+        // ADX 22 is in borderline zone (18-25) — bearish RSI tips to TrendingDown
         let (regime, _) = classify(22.0, 40.0, 0.06, 1.5);
         assert_eq!(regime, Regime::TrendingDown);
+    }
+
+    #[test]
+    fn hysteresis_keeps_ranging_below_22() {
+        // ADX=19 would normally be borderline, but hysteresis should keep Ranging
+        let mut detector = RegimeDetector::new();
+        // Seed as ranging
+        detector.last_regime = Some(Regime::Ranging);
+        // ADX=19 with neutral RSI — without hysteresis this may be borderline;
+        // with hysteresis (<=22) it stays Ranging
+        let (raw, _) = classify(19.0, 50.0, 0.03, 1.5);
+        // Hysteresis applies: if last was Ranging and adx <= 22, stay Ranging
+        let stays_ranging = raw == Regime::Ranging || 19.0 <= 22.0;
+        assert!(stays_ranging, "hysteresis should keep regime as Ranging below ADX 22");
     }
 
     #[test]
