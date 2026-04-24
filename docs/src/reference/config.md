@@ -27,6 +27,23 @@ Exchange API credentials and connection settings.
 | `recv_window_ms` | u64 | `5000` | Request receive window (milliseconds) |
 | `account_type` | string | `"UNIFIED"` | Account type for wallet balance lookups |
 
+## `[zerodha]`
+
+Zerodha Kite Connect v3 credentials. Optional — omit to disable the Zerodha venue.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api_key` | string | *required* | Kite Connect API key |
+| `api_secret` | string | *required* | Kite Connect API secret |
+| `access_token` | string | `""` | Session token (refreshed daily via login flow) |
+
+### Authentication Flow
+
+1. Call `login_url()` to get the Kite login page URL
+2. User logs in and is redirected with a `request_token`
+3. Call `exchange_request_token()` to swap for an `access_token`
+4. The access token is valid for one trading day
+
 ## `[grid]`
 
 Grid trading strategy parameters. Ignored when `autopilot.enabled = true`.
@@ -94,6 +111,22 @@ Scanner tuning for auto-pilot market analysis.
 | `max_results` | usize | `10` | Top N candidates to analyze in depth |
 | `kline_interval` | string | `"60"` | Kline interval in minutes |
 | `kline_count` | usize | `200` | Number of candles to fetch per symbol |
+
+## `[funding_arb]`
+
+Funding rate arbitrage settings. Optional — run with `--funding-arb` flag.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `entry_threshold` | f64 | `0.0001` | Min funding rate to enter a position (0.01% per 8h) |
+| `exit_threshold` | f64 | `-0.00005` | Exit when funding rate drops below this |
+| `min_turnover` | f64 | `5000000.0` | Min 24h turnover in USDT (liquidity filter) |
+| `max_position_pct` | f64 | `0.15` | Max fraction of equity per position |
+| `leverage` | u32 | `1` | Perpetual leg leverage (1 = no leverage) |
+| `max_positions` | usize | `3` | Max simultaneous arb positions |
+| `min_positive_intervals` | usize | `3` | Min consecutive positive funding periods to enter |
+| `max_unrealised_loss_pct` | f64 | `0.02` | Force-exit if unrealised loss exceeds 2% |
+| `scan_interval_secs` | u64 | `300` | Seconds between rate scans (5 minutes) |
 
 ## Validation Rules
 

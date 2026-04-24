@@ -3,6 +3,7 @@
 //! Strategies are pluggable: implement `Strategy` and register via the bot config.
 
 pub mod dca;
+pub mod funding_arb;
 
 use anyhow::Result;
 

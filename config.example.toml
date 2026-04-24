@@ -24,6 +24,14 @@ recv_window_ms = 5000
 account_type   = "UNIFIED"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Zerodha Kite Connect (optional — for Indian equity, F&O, MCX)
+# ─────────────────────────────────────────────────────────────────────────────
+# [zerodha]
+# api_key      = "YOUR_KITE_API_KEY"
+# api_secret   = "YOUR_KITE_API_SECRET"
+# access_token = ""  # refreshed daily via login flow; can be set at runtime
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Grid strategy
 # ─────────────────────────────────────────────────────────────────────────────
 [grid]
@@ -85,3 +93,18 @@ quote_currencies    = ["USDT"]    # which quote currencies to scan
 max_results         = 10          # top N candidates to analyze
 kline_interval      = "60"        # candlestick interval (minutes)
 kline_count         = 200         # candles to fetch for regime analysis
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Funding Rate Arbitrage (optional — run with `--funding-arb`)
+# Delta-neutral carry trade: long spot + short perpetual, collect funding.
+# ─────────────────────────────────────────────────────────────────────────────
+# [funding_arb]
+# entry_threshold          = 0.0001    # min funding rate to enter (0.01% per 8h)
+# exit_threshold           = -0.00005  # exit when rate drops below this
+# min_turnover             = 5000000.0 # min 24h turnover in USDT
+# max_position_pct         = 0.15      # max fraction of equity per position
+# leverage                 = 1         # perp leg leverage (1 = no leverage)
+# max_positions            = 3         # max simultaneous positions
+# min_positive_intervals   = 3         # min consecutive positive funding periods
+# max_unrealised_loss_pct  = 0.02      # force-exit if unrealised loss > 2%
+# scan_interval_secs       = 300       # check rates every 5 minutes

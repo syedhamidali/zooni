@@ -1,9 +1,9 @@
 #![allow(dead_code)]
-//! Zerodha Kite Connect v3 — skeleton. Indian equity + F&O + MCX commodities.
+//! Zerodha Kite Connect v3 — Indian equity + F&O + MCX commodities.
 //!
 //! Docs: <https://kite.trade/docs/connect/v3/>
 //!
-//! Auth flow (daily rotation — the painful bit):
+//! Auth flow (daily rotation):
 //!   1. User opens the Kite login URL with `api_key` → logs in (password + TOTP)
 //!      → redirected with `request_token` on the query string.
 //!   2. Server exchanges `api_key + request_token + api_secret` via POST /session/token
@@ -55,15 +55,44 @@ pub mod exchange {
     pub const MCX: &str = "MCX"; // commodity derivatives
 }
 
+/// Kite order variety codes.
+pub mod variety {
+    pub const REGULAR: &str = "regular";
+    pub const AMO: &str = "amo"; // after-market order
+    pub const CO: &str = "co"; // cover order
+    pub const ICEBERG: &str = "iceberg";
+    pub const AUCTION: &str = "auction";
+}
+
+/// Kite validity codes.
+pub mod validity {
+    pub const DAY: &str = "DAY";
+    pub const IOC: &str = "IOC";
+    pub const TTL: &str = "TTL"; // minutes-validity (for AMO/iceberg)
+}
+
 #[derive(Debug, Clone)]
 pub struct Credentials {
     pub api_key: String,
     pub api_secret: String,
-    /// Refreshed daily via the login flow.
     pub access_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub credentials: Option<Credentials>,
+}
+
+impl Config {
+    pub fn set_access_token(&mut self, token: String) {
+        if let Some(ref mut creds) = self.credentials {
+            creds.access_token = Some(token);
+        }
+    }
+
+    pub fn login_url(&self) -> Option<String> {
+        self.credentials
+            .as_ref()
+            .map(|c| LOGIN_URL_TEMPLATE.replace("{api_key}", &c.api_key))
+    }
 }

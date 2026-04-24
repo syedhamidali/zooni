@@ -1,9 +1,11 @@
 //! Venue integrations.
 //!
-//! Only `bybit` is fully wired for the grid bot. The rest are skeletons kept
-//! compilable so they can be filled in without restructuring: method bodies
-//! return `anyhow::bail!("not yet implemented: …")` so accidental calls fail
-//! loudly instead of silently succeeding.
+//! `bybit` is fully wired for the grid bot (crypto spot/perps).
+//! `zerodha` is implemented for Indian equity, F&O, and MCX commodities
+//! (requires daily access_token from the Kite login flow).
+//! The rest are skeletons kept compilable so they can be filled in without
+//! restructuring: method bodies return `anyhow::bail!("not yet implemented: …")`
+//! so accidental calls fail loudly instead of silently succeeding.
 
 pub mod bybit;
 pub mod hyperliquid;

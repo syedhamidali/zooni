@@ -7,8 +7,9 @@ Zooni is an autonomous algorithmic trading bot built in Rust. It runs grid tradi
 1. **Analyzes markets** using technical indicators (RSI, ADX, ATR, Bollinger Bands, VWAP) to detect whether a market is ranging, trending, or volatile
 2. **Picks the best symbols** by scanning all available pairs and ranking them by grid-trading suitability
 3. **Deploys grid orders** — layered buy and sell limit orders that capture profit from price oscillations
-4. **Manages risk** with per-symbol exposure caps, daily/weekly loss limits, max drawdown protection, and a kill switch
-5. **Monitors and adapts** — periodically re-scans the market and switches to better opportunities when they appear
+4. **Runs funding rate arbitrage** — delta-neutral carry trades that collect perpetual funding payments (long spot + short perp)
+5. **Manages risk** with per-symbol exposure caps, daily/weekly loss limits, max drawdown protection, and a kill switch
+6. **Monitors and adapts** — periodically re-scans the market and switches to better opportunities when they appear
 
 ## Key Properties
 
@@ -22,7 +23,7 @@ Zooni is an autonomous algorithmic trading bot built in Rust. It runs grid tradi
 
 | Binary | Purpose |
 |--------|---------|
-| `trading-bot` | Main bot — runs grids, autopilot, dashboard, Telegram |
+| `trading-bot` | Main bot — runs grids, autopilot, funding arb, dashboard, Telegram |
 | `backtest` | Test strategies against historical or synthetic price data |
 | `scan` | One-shot market scanner — rank symbols by grid suitability |
 
