@@ -43,25 +43,46 @@ impl Position {
 #[derive(Debug)]
 pub struct PnlTracker {
     positions: HashMap<String, Position>,
+    /// Fee rate applied to each fill's notional value (e.g. 0.001 = 0.1%).
+    fee_rate: f64,
+    /// Total fees paid across all strategies.
+    total_fees: f64,
 }
 
 impl PnlTracker {
     pub fn new() -> Self {
         Self {
             positions: HashMap::new(),
+            fee_rate: 0.001, // 0.1% default maker/taker fee
+            total_fees: 0.0,
         }
     }
 
-    /// Record a fill and return the realised P&L (0.0 for buys).
+    /// Create a tracker with a custom fee rate (e.g. 0.001 = 0.1%).
+    pub fn with_fee_rate(fee_rate: f64) -> Self {
+        Self {
+            positions: HashMap::new(),
+            fee_rate,
+            total_fees: 0.0,
+        }
+    }
+
+    /// Record a fill and return the realised P&L (net of fees; negative fee cost for buys).
     pub fn record_fill(&mut self, strategy: &str, side: Side, price: f64, qty: f64) -> f64 {
         let pos = self
             .positions
             .entry(strategy.to_string())
             .or_insert_with(Position::new);
 
+        let notional = price * qty;
+        let fee = notional * self.fee_rate;
+        self.total_fees += fee;
+
         match side {
             Side::Buy => {
-                let new_cost = pos.total_cost + price * qty;
+                // Include fee in cost basis so it's reflected when we sell
+                let effective_cost = notional + fee;
+                let new_cost = pos.total_cost + effective_cost;
                 pos.holdings += qty;
                 pos.total_cost = new_cost;
                 pos.avg_entry = if pos.holdings > 0.0 {
@@ -69,14 +90,15 @@ impl PnlTracker {
                 } else {
                     0.0
                 };
-                0.0
+                -fee // buys incur a fee cost
             }
             Side::Sell => {
                 let sell_qty = qty.min(pos.holdings);
                 if sell_qty <= 0.0 {
                     return 0.0;
                 }
-                let pnl = (price - pos.avg_entry) * sell_qty;
+                let gross_pnl = (price - pos.avg_entry) * sell_qty;
+                let pnl = gross_pnl - fee;
                 pos.holdings -= sell_qty;
                 pos.total_cost = pos.avg_entry * pos.holdings;
                 pos.realised_pnl += pnl;
@@ -87,6 +109,14 @@ impl PnlTracker {
                 pnl
             }
         }
+    }
+
+    pub fn total_fees(&self) -> f64 {
+        self.total_fees
+    }
+
+    pub fn fee_rate(&self) -> f64 {
+        self.fee_rate
     }
 
     pub fn realised_pnl(&self, strategy: &str) -> f64 {
@@ -155,13 +185,24 @@ impl Default for PnlTracker {
     }
 }
 
+impl PnlTracker {
+    pub fn set_fee_rate(&mut self, rate: f64) {
+        self.fee_rate = rate;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Use zero-fee tracker for legacy tests that check exact P&L amounts
+    fn zero_fee_tracker() -> PnlTracker {
+        PnlTracker::with_fee_rate(0.0)
+    }
+
     #[test]
     fn buy_has_zero_realised_pnl() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         let pnl = t.record_fill("grid", Side::Buy, 100.0, 1.0);
         assert_eq!(pnl, 0.0);
         assert!((t.holdings("grid") - 1.0).abs() < 1e-9);
@@ -170,7 +211,7 @@ mod tests {
 
     #[test]
     fn sell_computes_pnl() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
         let pnl = t.record_fill("grid", Side::Sell, 110.0, 1.0);
         assert!((pnl - 10.0).abs() < 1e-9);
@@ -180,7 +221,7 @@ mod tests {
 
     #[test]
     fn partial_sell() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("dca", Side::Buy, 100.0, 2.0);
         let pnl = t.record_fill("dca", Side::Sell, 120.0, 1.0);
         assert!((pnl - 20.0).abs() < 1e-9);
@@ -190,7 +231,7 @@ mod tests {
 
     #[test]
     fn multiple_buys_averaged() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("mom", Side::Buy, 100.0, 1.0);
         t.record_fill("mom", Side::Buy, 120.0, 1.0);
         // avg entry = (100 + 120) / 2 = 110
@@ -202,7 +243,7 @@ mod tests {
 
     #[test]
     fn losing_trade() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
         let pnl = t.record_fill("grid", Side::Sell, 90.0, 1.0);
         assert!((pnl - (-10.0)).abs() < 1e-9);
@@ -210,14 +251,14 @@ mod tests {
 
     #[test]
     fn sell_without_holdings_returns_zero() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         let pnl = t.record_fill("grid", Side::Sell, 100.0, 1.0);
         assert_eq!(pnl, 0.0);
     }
 
     #[test]
     fn oversell_capped_at_holdings() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("dca", Side::Buy, 100.0, 1.0);
         let pnl = t.record_fill("dca", Side::Sell, 110.0, 5.0);
         // Can only sell 1.0, not 5.0
@@ -227,7 +268,7 @@ mod tests {
 
     #[test]
     fn unrealised_pnl() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 2.0);
         let urpnl = t.unrealised_pnl("grid", 115.0);
         assert!((urpnl - 30.0).abs() < 1e-9);
@@ -235,7 +276,7 @@ mod tests {
 
     #[test]
     fn total_pnl_across_strategies() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
         t.record_fill("grid", Side::Sell, 110.0, 1.0);
         t.record_fill("dca", Side::Buy, 50.0, 2.0);
@@ -246,7 +287,7 @@ mod tests {
 
     #[test]
     fn win_rate_tracking() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
         t.record_fill("grid", Side::Sell, 110.0, 1.0); // win
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
@@ -256,7 +297,7 @@ mod tests {
 
     #[test]
     fn strategy_names_tracked() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
         t.record_fill("dca", Side::Buy, 50.0, 1.0);
         let names = t.strategy_names();
@@ -266,7 +307,7 @@ mod tests {
 
     #[test]
     fn total_unrealised_pnl() {
-        let mut t = PnlTracker::new();
+        let mut t = zero_fee_tracker();
         t.record_fill("grid", Side::Buy, 100.0, 1.0);
         t.record_fill("dca", Side::Buy, 200.0, 1.0);
         let total = t.total_unrealised_pnl(110.0);
@@ -278,5 +319,31 @@ mod tests {
     fn default_impl() {
         let t = PnlTracker::default();
         assert_eq!(t.total_realised_pnl(), 0.0);
+        assert!((t.fee_rate() - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fees_deducted_from_pnl() {
+        let mut t = PnlTracker::with_fee_rate(0.001); // 0.1%
+        // Buy 1 BTC at 100 → fee = 100 * 0.001 = 0.1
+        let buy_pnl = t.record_fill("grid", Side::Buy, 100.0, 1.0);
+        assert!((buy_pnl - (-0.1)).abs() < 1e-9, "buy should return -fee");
+        // avg_entry includes fee: (100 + 0.1) / 1 = 100.1
+        assert!((t.avg_entry("grid") - 100.1).abs() < 1e-9);
+
+        // Sell 1 BTC at 110 → gross pnl = (110 - 100.1) * 1 = 9.9, fee = 0.11
+        let sell_pnl = t.record_fill("grid", Side::Sell, 110.0, 1.0);
+        let expected = 9.9 - 0.11; // 9.79
+        assert!(
+            (sell_pnl - expected).abs() < 1e-6,
+            "sell pnl should be net of fees: got {sell_pnl}, expected {expected}"
+        );
+        assert!(t.total_fees() > 0.0);
+    }
+
+    #[test]
+    fn custom_fee_rate() {
+        let t = PnlTracker::with_fee_rate(0.0005);
+        assert!((t.fee_rate() - 0.0005).abs() < 1e-9);
     }
 }
