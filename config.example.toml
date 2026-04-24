@@ -57,6 +57,15 @@ auto_rebalance = false
 # Trailing profit: threshold in quote currency (0 = disabled)
 trailing_profit_threshold = 0.0
 
+# Use maker orders (PostOnly) to pay 0.02% fee instead of 0.1% taker fee.
+# On rejection (price too close to spread), bot adjusts by one tick and retries once.
+use_post_only = true  # Use maker orders (0.02% fee) instead of taker (0.1% fee)
+
+# VWAP entry filter: only start placing grid orders when price is near VWAP.
+# Reduces adverse selection — avoids starting a grid when price has already run far from fair value.
+vwap_entry_filter = false  # Set true to only start grid when price is near VWAP (reduces adverse selection)
+vwap_threshold_pct = 0.005 # Max allowed deviation from VWAP to start grid (0.5%)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Risk management
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,13 +198,15 @@ kline_count         = 200         # candles to fetch for regime analysis
 # qty_per_level          = 0.001    # base asset qty per grid line
 #
 # [orchestrator.pairs]
-# symbol_a               = "ETHUSDT"   # first leg
-# symbol_b               = "BTCUSDT"   # second leg (correlated peer)
-# lookback               = 100         # bars for spread statistics
+# symbol_a               = "BTCUSDT"   # first leg
+# symbol_b               = "ETHUSDT"   # second leg (correlated peer)
+# lookback               = 60          # bars for spread statistics
 # entry_z_score          = 2.0         # enter when spread deviates > 2σ
 # exit_z_score           = 0.5         # exit when spread reverts within 0.5σ
 # stop_z_score           = 3.5         # stop out if spread diverges > 3.5σ
-# position_size_quote    = 1000.0      # quote currency per leg
+# position_size_quote    = 500.0       # quote currency per leg
+# min_correlation        = 0.7         # minimum Pearson correlation required to trade
+# hedge_ratio            = 1.0         # fixed hedge ratio (qty_a / qty_b)
 
 # [pairs]
 # symbol_a             = "NSE:HDFCBANK"   # first leg

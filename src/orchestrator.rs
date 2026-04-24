@@ -141,6 +141,10 @@ pub struct PairsOrchCfg {
     pub stop_z_score: f64,
     #[serde(default = "default_pairs_position_size")]
     pub position_size_quote: f64,
+    #[serde(default = "default_pairs_min_correlation")]
+    pub min_correlation: f64,
+    #[serde(default = "default_pairs_hedge_ratio")]
+    pub hedge_ratio: f64,
 }
 
 impl Default for PairsOrchCfg {
@@ -153,6 +157,8 @@ impl Default for PairsOrchCfg {
             exit_z_score: default_pairs_exit_z(),
             stop_z_score: default_pairs_stop_z(),
             position_size_quote: default_pairs_position_size(),
+            min_correlation: default_pairs_min_correlation(),
+            hedge_ratio: default_pairs_hedge_ratio(),
         }
     }
 }
@@ -177,6 +183,12 @@ fn default_pairs_stop_z() -> f64 {
 }
 fn default_pairs_position_size() -> f64 {
     1000.0
+}
+fn default_pairs_min_correlation() -> f64 {
+    0.7
+}
+fn default_pairs_hedge_ratio() -> f64 {
+    1.0
 }
 
 fn default_strategies() -> Vec<String> {

@@ -282,6 +282,7 @@ impl Venue {
         qty: &str,
         price: Option<&str>,
         tag: Option<&str>,
+        post_only: bool,
     ) -> Result<VenueOrderResult> {
         match self {
             Self::Bybit { client, .. } => {
@@ -290,7 +291,7 @@ impl Venue {
                     OrderKind::Market => "Market",
                 };
                 let result = client
-                    .place_spot_order(symbol, side, order_type, qty, price, tag)
+                    .place_spot_order(symbol, side, order_type, qty, price, tag, post_only)
                     .await?;
                 Ok(VenueOrderResult {
                     order_id: result.order_id,

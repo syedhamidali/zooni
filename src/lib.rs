@@ -10,6 +10,7 @@ pub mod grid;
 pub mod indicators;
 pub mod market_hours;
 pub mod metrics;
+pub mod ml_regime;
 pub mod orchestrator;
 pub mod orchestrator_runner;
 pub mod order_manager;

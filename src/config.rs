@@ -4,7 +4,7 @@
 //! see `config.example.toml` for the shape.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::alerts::AlertConfig;
@@ -37,6 +37,8 @@ pub struct BotConfig {
     pub orchestrator: OrchestratorConfig,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    #[serde(default)]
+    pub sizing: SizingCfg,
 }
 
 impl BotConfig {
@@ -228,6 +230,18 @@ pub struct FundingArbCfg {
     /// How often to scan funding rates (seconds).
     #[serde(default = "default_arb_scan_interval")]
     pub scan_interval_secs: u64,
+    /// EMA decay factor for funding rate smoothing (0 < decay ≤ 1). Default: 0.8.
+    #[serde(default = "default_arb_funding_ema_decay")]
+    pub funding_ema_decay: f64,
+    /// Number of recent funding intervals to keep in the ring buffer. Default: 8.
+    #[serde(default = "default_arb_funding_lookback")]
+    pub funding_lookback: usize,
+    /// Require a positive funding rate trend (rates increasing) before entry. Default: true.
+    #[serde(default = "default_true")]
+    pub require_positive_trend: bool,
+    /// Number of consecutive below-threshold intervals required before exiting (graceful exit). Default: 2.
+    #[serde(default = "default_arb_exit_confirmation")]
+    pub exit_confirmation_intervals: u32,
 }
 
 fn default_entry_threshold() -> f64 {
@@ -263,6 +277,15 @@ fn default_arb_min_net_yield() -> f64 {
 fn default_arb_scan_interval() -> u64 {
     300
 }
+fn default_arb_funding_ema_decay() -> f64 {
+    0.8
+}
+fn default_arb_funding_lookback() -> usize {
+    8
+}
+fn default_arb_exit_confirmation() -> u32 {
+    2
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct GridCfg {
@@ -284,6 +307,42 @@ pub struct GridCfg {
     /// Trailing profit: lock in gains when grid fills accumulate beyond this threshold (USDT).
     #[serde(default)]
     pub trailing_profit_threshold: f64,
+    /// Cancel all buy orders when regime transitions from Ranging to Trending,
+    /// to prevent accumulating base asset into a directional move.
+    #[serde(default = "default_true")]
+    pub cancel_buys_on_trend: bool,
+    /// Automatically re-center the grid if price escapes the range by
+    /// `recenter_threshold_pct` beyond the upper or lower band.
+    #[serde(default)]
+    pub auto_recenter: bool,
+    /// How far outside the grid band price must move before triggering auto-recenter
+    /// (as a fraction of the band edge, e.g. 0.15 = 15%). Default: 0.15.
+    #[serde(default = "default_recenter_threshold")]
+    pub recenter_threshold_pct: f64,
+    /// Use post-only (maker) orders for limit placements to pay maker fees (0.02%)
+    /// instead of taker fees (0.1%). On PostOnly rejection, the bot adjusts price
+    /// by one tick and retries once. If still rejected, skips the level this cycle.
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub use_post_only: bool,
+    /// Only start placing grid orders when the current price is within
+    /// `vwap_threshold_pct` of VWAP. Reduces adverse selection on grid start.
+    /// Default: false (filter disabled).
+    #[serde(default)]
+    pub vwap_entry_filter: bool,
+    /// Maximum allowed fractional deviation from VWAP to start the grid.
+    /// E.g. 0.005 = allow grid start if price is within 0.5% of VWAP.
+    /// Only used when `vwap_entry_filter = true`. Default: 0.005.
+    #[serde(default = "default_vwap_threshold_pct")]
+    pub vwap_threshold_pct: f64,
+}
+
+fn default_recenter_threshold() -> f64 {
+    0.15
+}
+
+fn default_vwap_threshold_pct() -> f64 {
+    0.005
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,6 +450,36 @@ fn default_max_consecutive_losses() -> u32 {
 fn default_fee_rate() -> f64 {
     0.001
 }
+
+// ── Sizing config ────────────────────────────────────────────────────────────
+
+/// Position-sizing tuning knobs.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SizingCfg {
+    /// Fractional-Kelly multiplier applied to the raw Kelly fraction.
+    /// 0.15 (15% of full Kelly) gives ~50% of returns with far lower drawdown.
+    #[serde(default = "default_kelly_fraction")]
+    pub kelly_fraction: f64,
+    /// Minimum notional order size in quote currency. Orders below this are skipped.
+    #[serde(default = "default_min_order_notional")]
+    pub min_order_notional: f64,
+}
+
+impl Default for SizingCfg {
+    fn default() -> Self {
+        Self {
+            kelly_fraction: default_kelly_fraction(),
+            min_order_notional: default_min_order_notional(),
+        }
+    }
+}
+
+fn default_kelly_fraction() -> f64 {
+    0.15
+}
+fn default_min_order_notional() -> f64 {
+    10.0
+}
 fn default_db_path() -> String {
     "trading-bot.db".to_string()
 }
@@ -466,6 +555,73 @@ impl BotConfig {
             );
         }
         Ok(())
+    }
+}
+
+// ── Optimal parameters (written by zooni-optimize, read at bot startup) ──────
+
+/// Optimal grid parameters produced by the walk-forward optimizer.
+/// Stored as `optimal_params.json` alongside the bot binary.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OptimalParams {
+    /// Trading symbol these parameters apply to (e.g. "BTCUSDT").
+    pub symbol: String,
+    /// Number of grid levels.
+    pub levels: u32,
+    /// Grid spacing as a fraction of price (e.g. 0.008 = 0.8%).
+    pub spacing_pct: f64,
+    /// Absolute lower price boundary for the grid.
+    pub lower_price: f64,
+    /// Absolute upper price boundary for the grid.
+    pub upper_price: f64,
+    /// RFC-3339 timestamp when the file was generated.
+    pub generated_at: String,
+    /// Sharpe ratio achieved on the training window.
+    pub train_sharpe: f64,
+    /// Sharpe ratio achieved on the held-out test window.
+    pub test_sharpe: f64,
+}
+
+/// Load optimal parameters from a JSON file written by `zooni-optimize`.
+///
+/// Returns `None` (and logs a warning) if the file does not exist or cannot
+/// be parsed — the bot will then fall back to its TOML config values.
+///
+/// # Example
+/// ```no_run
+/// use zooni::config::load_optimal_params;
+/// if let Some(p) = load_optimal_params("optimal_params.json") {
+///     println!("Loaded optimal params: {} levels, lower={}", p.levels, p.lower_price);
+/// }
+/// ```
+pub fn load_optimal_params(path: &str) -> Option<OptimalParams> {
+    match std::fs::read_to_string(path) {
+        Ok(json) => match serde_json::from_str::<OptimalParams>(&json) {
+            Ok(params) => {
+                tracing::info!(
+                    path,
+                    symbol = %params.symbol,
+                    levels = params.levels,
+                    lower_price = params.lower_price,
+                    upper_price = params.upper_price,
+                    test_sharpe = params.test_sharpe,
+                    "Loaded optimal grid parameters from optimizer output"
+                );
+                Some(params)
+            }
+            Err(e) => {
+                tracing::warn!(path, error = %e, "Failed to parse optimal_params.json — using config defaults");
+                None
+            }
+        },
+        Err(_) => {
+            // File simply not present — this is the normal state before the first optimizer run.
+            tracing::debug!(
+                path,
+                "optimal_params.json not found — using config defaults"
+            );
+            None
+        }
     }
 }
 

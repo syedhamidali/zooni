@@ -28,6 +28,10 @@ path = "src/bin/scan.rs"
 name = "zooni-kite-login"
 path = "src/bin/kite_login.rs"
 
+[[bin]]
+name = "zooni-optimize"
+path = "src/bin/optimize.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
@@ -50,6 +54,7 @@ crossterm = "0.29"
 ratatui = "0.29"
 axum = "0.8"
 tower = "0.5"
+tract-onnx = "0.21"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

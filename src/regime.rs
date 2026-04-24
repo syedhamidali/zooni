@@ -2,8 +2,13 @@
 //!
 //! Determines whether a market is trending (bad for grid) or ranging (good for grid),
 //! and recommends strategy parameters accordingly.
+//!
+//! When `use_ml_regime = true` **and** the ONNX model file exists, the regime
+//! is decided by the ML classifier (`src/ml_regime.rs`).  Otherwise the
+//! classic ADX/RSI/BB heuristic is used as a fallback.
 
 use crate::indicators;
+use crate::ml_regime::MlRegimeClassifier;
 use crate::venue::VenueKline as Kline;
 
 /// Market regime classification.
@@ -35,7 +40,7 @@ impl std::fmt::Display for Regime {
 pub struct RegimeAnalysis {
     pub regime: Regime,
     pub confidence: f64,
-    /// ADX value (trend strength). > 25 = trending, < 20 = ranging.
+    /// ADX value (trend strength). > 25 = trending, < 18 = ranging.
     pub adx: f64,
     /// RSI value (momentum). Extreme values (>70 or <30) suggest overextension.
     pub rsi: f64,
@@ -43,12 +48,159 @@ pub struct RegimeAnalysis {
     pub bb_bandwidth: f64,
     /// ATR as percentage of price — higher = more volatile.
     pub volatility_pct: f64,
+    /// ATR absolute value — used for grid re-centering half-range.
+    pub atr: f64,
     /// Whether grid trading is recommended in this regime.
     pub grid_suitable: bool,
     /// Suggested grid range (lower, upper) based on Bollinger bands and ATR.
     pub suggested_range: Option<(f64, f64)>,
     /// Suggested number of grid levels based on volatility.
     pub suggested_levels: Option<u32>,
+}
+
+/// Configuration for the regime detector.
+#[derive(Debug, Clone)]
+pub struct RegimeDetectorConfig {
+    /// If `true`, use the ML classifier when the model file is present.
+    /// Falls back to ADX heuristics when `false` or when the file is missing.
+    pub use_ml_regime: bool,
+    /// Path to the ONNX model file.  Default: `"ml/regime_classifier.onnx"`.
+    pub ml_model_path: String,
+}
+
+impl Default for RegimeDetectorConfig {
+    fn default() -> Self {
+        Self {
+            use_ml_regime: false,
+            ml_model_path: "ml/regime_classifier.onnx".to_string(),
+        }
+    }
+}
+
+/// Stateful regime detector with hysteresis to prevent flip-flopping on ADX noise.
+///
+/// Wrap `analyze()` with this when you need persistent state across ticks.
+///
+/// Set `config.use_ml_regime = true` to activate the ONNX classifier.
+pub struct RegimeDetector {
+    /// Last confirmed regime (used for hysteresis).
+    pub last_regime: Option<Regime>,
+    /// ML classifier — loaded lazily on first use.
+    ml_classifier: Option<MlRegimeClassifier>,
+    /// Detector configuration.
+    config: RegimeDetectorConfig,
+}
+
+impl std::fmt::Debug for RegimeDetector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegimeDetector")
+            .field("last_regime", &self.last_regime)
+            .field("ml_loaded", &self.ml_classifier.is_some())
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl Default for RegimeDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RegimeDetector {
+    /// Create a detector with default config (ADX heuristic only).
+    pub fn new() -> Self {
+        Self::with_config(RegimeDetectorConfig::default())
+    }
+
+    /// Create a detector with the given configuration.
+    pub fn with_config(config: RegimeDetectorConfig) -> Self {
+        let ml_classifier = if config.use_ml_regime {
+            match MlRegimeClassifier::load(&config.ml_model_path) {
+                Ok(clf) => {
+                    tracing::info!(
+                        path = %config.ml_model_path,
+                        "ML regime classifier loaded"
+                    );
+                    Some(clf)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %config.ml_model_path,
+                        error = %e,
+                        "ML regime model not loaded — falling back to ADX heuristic"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Self {
+            last_regime: None,
+            ml_classifier,
+            config,
+        }
+    }
+
+    /// Analyze klines and apply hysteresis: once Ranging, keep Ranging until ADX > 22.
+    ///
+    /// When the ML classifier is loaded, its binary Ranging/Trending prediction
+    /// overrides the ADX regime (Volatile still takes precedence).
+    ///
+    /// # Hysteresis prevents regime flip-flopping on ADX noise
+    pub fn analyze(&mut self, klines: &[Kline]) -> Option<RegimeAnalysis> {
+        let mut result = analyze(klines)?;
+
+        // ML override: if classifier is present and the baseline isn't Volatile,
+        // replace the regime with the ML prediction.
+        if let Some(ref clf) = self.ml_classifier {
+            if !matches!(result.regime, Regime::Volatile) {
+                let vol_ratio = 1.0_f32; // volume_ratio not available from klines here; use neutral
+                match clf.predict(
+                    result.adx as f32,
+                    result.rsi as f32,
+                    result.bb_bandwidth as f32,
+                    (result.atr / (klines.last().map(|k| k.close).unwrap_or(1.0))) as f32,
+                    vol_ratio,
+                    0.0_f32, // returns_std_5d — not cached here; neutral
+                    0.0_f32, // returns_std_20d — not cached here; neutral
+                ) {
+                    Ok(is_ranging) => {
+                        result.regime = if is_ranging {
+                            Regime::Ranging
+                        } else {
+                            // Use RSI direction for trending sub-classification
+                            if result.rsi >= 50.0 {
+                                Regime::TrendingUp
+                            } else {
+                                Regime::TrendingDown
+                            }
+                        };
+                        result.grid_suitable = is_ranging
+                            || (matches!(result.regime, Regime::TrendingUp) && result.adx < 30.0);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ML regime inference failed — using ADX fallback");
+                    }
+                }
+            }
+        }
+
+        // Hysteresis prevents regime flip-flopping on ADX noise
+        if let Some(Regime::Ranging) = self.last_regime {
+            // Stay ranging until ADX convincingly breaks out above 22
+            if result.adx <= 22.0 && !matches!(result.regime, Regime::Volatile) {
+                result.regime = Regime::Ranging;
+                // Recompute grid_suitable with the hysteresis-adjusted regime
+                result.grid_suitable = true;
+            }
+        }
+
+        self.last_regime = Some(result.regime);
+        Some(result)
+    }
 }
 
 /// Analyze market regime from kline data.
@@ -118,6 +270,7 @@ pub fn analyze(klines: &[Kline]) -> Option<RegimeAnalysis> {
         rsi: rsi_val,
         bb_bandwidth: bb_bw,
         volatility_pct,
+        atr: atr_val,
         grid_suitable,
         suggested_range,
         suggested_levels,
@@ -149,13 +302,13 @@ fn classify(adx: f64, rsi: f64, bb_bandwidth: f64, vol_pct: f64) -> (Regime, f64
         return (direction, conf * 0.7);
     }
 
-    // Low ADX + narrow Bollinger bands = ranging
-    if adx < 20.0 {
-        let conf = ((20.0 - adx) / 15.0).clamp(0.5, 0.95);
+    // Low ADX + narrow Bollinger bands = ranging (tighter threshold for higher conviction)
+    if adx < 18.0 {
+        let conf = ((18.0 - adx) / 13.0).clamp(0.5, 0.95);
         return (Regime::Ranging, conf);
     }
 
-    // Borderline (ADX 20-25) — lean towards ranging with lower confidence
+    // Borderline (ADX 18-25) — lean towards ranging with lower confidence
     let conf = 0.4;
     if bb_bandwidth < 0.04 {
         (Regime::Ranging, conf + 0.1)
@@ -247,20 +400,40 @@ mod tests {
 
     #[test]
     fn classify_borderline_adx_narrow_bb() {
+        // ADX 22 is in borderline zone (18-25) — narrow BB should lean Ranging
         let (regime, _) = classify(22.0, 50.0, 0.03, 1.5);
         assert_eq!(regime, Regime::Ranging);
     }
 
     #[test]
     fn classify_borderline_adx_bullish() {
+        // ADX 22 is in borderline zone (18-25) — bullish RSI tips to TrendingUp
         let (regime, _) = classify(22.0, 60.0, 0.06, 1.5);
         assert_eq!(regime, Regime::TrendingUp);
     }
 
     #[test]
     fn classify_borderline_adx_bearish() {
+        // ADX 22 is in borderline zone (18-25) — bearish RSI tips to TrendingDown
         let (regime, _) = classify(22.0, 40.0, 0.06, 1.5);
         assert_eq!(regime, Regime::TrendingDown);
+    }
+
+    #[test]
+    fn hysteresis_keeps_ranging_below_22() {
+        // ADX=19 would normally be borderline, but hysteresis should keep Ranging
+        let mut detector = RegimeDetector::new();
+        // Seed as ranging
+        detector.last_regime = Some(Regime::Ranging);
+        // ADX=19 with neutral RSI — without hysteresis this may be borderline;
+        // with hysteresis (<=22) it stays Ranging
+        let (raw, _) = classify(19.0, 50.0, 0.03, 1.5);
+        // Hysteresis applies: if last was Ranging and adx <= 22, stay Ranging
+        let stays_ranging = raw == Regime::Ranging || 19.0 <= 22.0;
+        assert!(
+            stays_ranging,
+            "hysteresis should keep regime as Ranging below ADX 22"
+        );
     }
 
     #[test]

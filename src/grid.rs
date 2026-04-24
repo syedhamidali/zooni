@@ -205,6 +205,12 @@ mod tests {
             cancel_existing_on_start: true,
             auto_rebalance: false,
             trailing_profit_threshold: 0.0,
+            cancel_buys_on_trend: false,
+            auto_recenter: false,
+            recenter_threshold_pct: 0.15,
+            use_post_only: true,
+            vwap_entry_filter: false,
+            vwap_threshold_pct: 0.005,
         };
         Grid::new(&cfg, "0.01".into(), "0.000001".into(), 0.0001, 5.0)
     }
@@ -263,6 +269,12 @@ mod tests {
             cancel_existing_on_start: true,
             auto_rebalance: false,
             trailing_profit_threshold: 0.0,
+            cancel_buys_on_trend: false,
+            auto_recenter: false,
+            recenter_threshold_pct: 0.15,
+            use_post_only: true,
+            vwap_entry_filter: false,
+            vwap_threshold_pct: 0.005,
         };
         let g = Grid::new(&cfg, "0.01".into(), "0.000001".into(), 0.0001, 5.0);
         assert!(g.validate_sizing().is_err());

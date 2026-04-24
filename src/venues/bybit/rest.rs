@@ -14,6 +14,9 @@ use reqwest::Client as Http;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Bybit error code returned when a PostOnly order would immediately match as taker.
+pub const ERR_POST_ONLY_TAKER: i64 = 170213;
+
 use super::signer::sign;
 use super::{Config, REST_BASE, REST_BASE_TESTNET};
 use crate::types::Side;
@@ -457,6 +460,12 @@ impl Client {
             .ok_or_else(|| anyhow!("bybit: empty result for {}", path))
     }
 
+    /// Returns true if the error is a PostOnly rejection (order would have filled as taker).
+    pub fn is_post_only_rejection(e: &anyhow::Error) -> bool {
+        let msg = e.to_string();
+        msg.contains(&format!("bybit error {}:", ERR_POST_ONLY_TAKER))
+    }
+
     // -- High-level methods --------------------------------------------------
 
     /// Wallet balance for an account type. Spot accounts on testnet are usually UNIFIED.
@@ -471,6 +480,9 @@ impl Client {
     }
 
     /// Place a spot order. `price` is required for Limit orders, None for Market.
+    /// When `post_only = true`, the order uses `timeInForce: PostOnly` so it will
+    /// only ever rest on the book as a maker order (0.02% fee vs 0.1% taker).
+    /// Bybit rejects with error 170213 if the order would immediately fill as taker.
     pub async fn place_spot_order(
         &self,
         symbol: &str,
@@ -479,10 +491,18 @@ impl Client {
         qty: &str,
         price: Option<&str>,
         order_link_id: Option<&str>,
+        post_only: bool,
     ) -> Result<PlaceOrderResult> {
         let side_str = match side {
             Side::Buy => "Buy",
             Side::Sell => "Sell",
+        };
+        let time_in_force = if post_only && order_type == "Limit" {
+            Some("PostOnly")
+        } else if order_type == "Limit" {
+            Some("GTC")
+        } else {
+            None
         };
         let req = PlaceOrderReq {
             category: "spot",
@@ -491,11 +511,7 @@ impl Client {
             order_type,
             qty: qty.to_string(),
             price: price.map(|p| p.to_string()),
-            time_in_force: if order_type == "Limit" {
-                Some("GTC")
-            } else {
-                None
-            },
+            time_in_force,
             order_link_id,
         };
         self.signed_post("/v5/order/create", &req).await
@@ -789,6 +805,8 @@ impl Client {
     }
 
     /// Place a linear perpetual order.
+    /// When `post_only = true`, the order uses `timeInForce: PostOnly` so it will
+    /// only ever rest on the book as a maker order (0.02% fee vs 0.1% taker).
     pub async fn place_linear_order(
         &self,
         symbol: &str,
@@ -798,6 +816,7 @@ impl Client {
         price: Option<&str>,
         reduce_only: bool,
         order_link_id: Option<&str>,
+        post_only: bool,
     ) -> Result<PlaceOrderResult> {
         let side_str = match side {
             Side::Buy => "Buy",
@@ -820,6 +839,13 @@ impl Client {
             #[serde(rename = "orderLinkId", skip_serializing_if = "Option::is_none")]
             order_link_id: Option<&'a str>,
         }
+        let time_in_force = if post_only && order_type == "Limit" {
+            Some("PostOnly")
+        } else if order_type == "Limit" {
+            Some("GTC")
+        } else {
+            None
+        };
         self.signed_post(
             "/v5/order/create",
             &Req {
@@ -829,11 +855,7 @@ impl Client {
                 order_type,
                 qty,
                 price,
-                time_in_force: if order_type == "Limit" {
-                    Some("GTC")
-                } else {
-                    None
-                },
+                time_in_force,
                 reduce_only,
                 order_link_id,
             },

@@ -19,21 +19,25 @@ Autonomous algorithmic trading bot for crypto and Indian equity markets. Multi-s
 - **Auto-Pilot Mode** — scans markets, picks the best symbol, deploys grids, and switches when better opportunities appear
 
 ### Intelligence
-- **Market Regime Detection** — RSI, ADX, ATR, Bollinger Bands, SMA, EMA, VWAP classify Ranging/Trending/Volatile
+- **Market Regime Detection** — RSI, ADX (threshold 18, hysteresis 22), ATR, Bollinger Bands, SMA, EMA, VWAP classify Ranging/Trending/Volatile
+- **ML Regime Classifier** — optional XGBoost model (trained on 2yr BTC+equity data) exported as ONNX, loaded in Rust via `tract`. Enable with `use_ml_regime = true` in config.
+- **VWAP Entry Filter** — grid only starts when price is within `vwap_threshold_pct` (default 0.5%) of VWAP, reducing adverse selection
+- **Auto-Cancel on Trend Breakout** — when regime switches Ranging → Trending, buy orders are cancelled automatically; sell orders kept open
+- **Grid Auto Re-Centering** — if price drifts >15% from grid range, levels are recalculated around current price using 2×ATR as half-range
 - **Equity Curve Risk Guard** — auto-disables strategies exceeding drawdown threshold, re-enables after cooldown
-- **Smart Sizing** — Kelly criterion blended with regime-adjusted scaling
+- **Smart Sizing** — fractional Kelly (0.15×), 5-tier volatility scaling, regime-aware hard caps (5–20%), $10 minimum notional filter
 - **Tax-Aware Profitability** — India 30% crypto tax + 1% TDS, equity STCG/LTCG factored into entry decisions
 - **Slippage Protection** — reject adverse fills, convert market orders to aggressive limits
 
 ### Infrastructure
 - **Multi-Venue** — Bybit (crypto spot/perps) and Zerodha Kite Connect (Indian equity/F&O/MCX) via unified venue abstraction
 - **Yahoo Finance** — free historical data for backtesting and regime detection (no paid API needed)
-- **Risk Engine** — per-symbol, per-strategy, and portfolio-wide exposure limits with daily/weekly loss caps and max drawdown
+- **Risk Engine** — per-symbol, per-strategy, and portfolio-wide exposure limits with rolling 24h/7d loss windows (not calendar-day reset) and max drawdown
 - **Web Dashboard** — real-time charts, grid visualization, and P&L at `http://localhost:9090`
 - **TUI Dashboard** — terminal-based live view with `--tui`
 - **Telegram Bot** — remote `/status`, `/pnl`, `/alloc`, `/regime`, `/pause`, `/resume` + proactive alerts (regime changes, strategy disables, P&L thresholds)
 - **Webhook Alerts** — Slack, Discord, or any HTTP POST endpoint
-- **Backtesting** — grid, orchestrator, walk-forward analysis, optimizer sweep, CSV export
+- **Backtesting** — realistic simulation with slippage (0.05–0.15%), partial fills (33%), maker/taker fee split, and 5% order rejection; walk-forward analysis, optimizer sweep, CSV export
 - **Circuit Breaker** — pauses API calls after consecutive failures, auto-resets after cooldown
 - **Rate Limiting** — token bucket to stay within exchange API limits
 
@@ -100,6 +104,7 @@ cp config.example.toml config.toml
 |--------|-------------|
 | `zooni` | Main bot — grid, orchestrator, autopilot, funding-arb, TUI, Telegram |
 | `zooni-backtest` | Backtest strategies against CSV, synthetic, or Yahoo Finance data |
+| `zooni-optimize` | Walk-forward optimizer — finds best grid parameters, saves `optimal_params.json` |
 | `zooni-scan` | One-shot market scanner — rank symbols by grid suitability |
 | `zooni-kite-login` | Zerodha Kite Connect daily login helper (OAuth token exchange) |
 
@@ -128,6 +133,28 @@ zooni-backtest config.toml --optimize --data prices.csv
 
 # Export results to CSV
 zooni-backtest config.toml --yahoo INFY.NS --orchestrator --export results.csv
+```
+
+### Optimizer
+
+```bash
+# Auto-tune grid parameters using walk-forward optimization (70% train / 30% test)
+# Scored by out-of-sample Sharpe ratio — saves optimal_params.json
+zooni-optimize config.toml --symbol BTCUSDT --yahoo BTCUSDT
+zooni-optimize config.toml --symbol BTCUSDT --synthetic 2000
+zooni-optimize config.toml --symbol BTCUSDT --data prices.csv
+```
+
+### ML Regime Classifier (optional)
+
+```bash
+# Train the XGBoost regime classifier on 2yr historical data
+# Requires: pip3 install xgboost scikit-learn skl2onnx onnx yfinance pandas numpy
+python3 ml/train_regime.py
+
+# Enable in config.toml:
+# use_ml_regime = true
+# ml_model_path = "ml/regime_classifier.onnx"
 ```
 
 ### Scanner

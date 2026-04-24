@@ -41,7 +41,7 @@ use crate::risk::{Market, RiskConfig, RiskEngine};
 use crate::strategy::dca::DcaStrategy;
 use crate::strategy::grid_strategy::{GridStrategy, GridStrategyConfig};
 use crate::strategy::momentum::{MomentumConfig, MomentumStrategy};
-use crate::strategy::pairs::{PairsConfig, PairsStrategy};
+use crate::strategy::pairs::{HedgeMethod, PairsConfig, PairsStrategy};
 use crate::strategy::{MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::telegram::{self, TelegramBot};
 use crate::types::Side;
@@ -466,7 +466,7 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
                             }
                         };
                         let result = venue
-                            .place_order(sym, *side, kind, &qty_str, price_arg, None)
+                            .place_order(sym, *side, kind, &qty_str, price_arg, None, false)
                             .await;
 
                         match result {
@@ -786,6 +786,11 @@ fn build_strategies(symbol: &str, cfg: &BotConfig) -> Vec<Box<dyn Strategy>> {
                     upper_price: grid_cfg.upper_price,
                     levels: grid_cfg.levels,
                     qty_per_level: grid_cfg.qty_per_level,
+                    cancel_buys_on_trend: true,
+                    auto_recenter: false,
+                    recenter_threshold_pct: 0.15,
+                    vwap_entry_filter: false,
+                    vwap_threshold_pct: 0.005,
                 })));
                 info!(
                     lower = grid_cfg.lower_price,
@@ -805,6 +810,8 @@ fn build_strategies(symbol: &str, cfg: &BotConfig) -> Vec<Box<dyn Strategy>> {
                     exit_z_score: pairs_cfg.exit_z_score,
                     stop_z_score: pairs_cfg.stop_z_score,
                     position_size_quote: pairs_cfg.position_size_quote,
+                    min_correlation: pairs_cfg.min_correlation,
+                    hedge_ratio_method: HedgeMethod::Fixed(pairs_cfg.hedge_ratio),
                     ..PairsConfig::default()
                 })));
                 info!(

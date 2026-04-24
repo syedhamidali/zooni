@@ -455,6 +455,11 @@ fn build_backtest_strategies(
                     upper_price: grid.upper_price,
                     levels: grid.levels,
                     qty_per_level: grid.qty_per_level,
+                    cancel_buys_on_trend: true,
+                    auto_recenter: false,
+                    recenter_threshold_pct: 0.15,
+                    vwap_entry_filter: false,
+                    vwap_threshold_pct: 0.005,
                 })));
             }
             "pairs" => {

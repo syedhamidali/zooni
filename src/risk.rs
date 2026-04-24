@@ -5,9 +5,13 @@
 //! Fills update exposure via `on_fill(...)`. PnL is updated by the bot loop via
 //! `set_daily_pnl` / `set_equity`. The kill switch is atomic so any task can trip it.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+
+use chrono::{DateTime, Duration, Utc};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RiskConfig {
@@ -61,12 +65,76 @@ pub enum Market {
     UsEquity,
 }
 
+/// Rolling-window loss tracking entry: (timestamp, absolute loss amount > 0).
+type LossEvent = (DateTime<Utc>, f64);
+
+/// Interior-mutable state for the rolling-window cache so that `pretrade_check`
+/// can retain its `&self` receiver while still updating cached values.
+#[derive(Debug)]
+struct WindowCache {
+    /// Timestamped log of realized losses (positive values = loss magnitude).
+    /// Pruned to 7 days whenever `refresh` runs.
+    loss_history: Vec<LossEvent>,
+    /// When the rolling sums were last computed. `None` = never.
+    last_calc: Option<Instant>,
+    /// Cached rolling 24 h loss sum (positive = loss).
+    daily_loss: f64,
+    /// Cached rolling 168 h loss sum (positive = loss).
+    weekly_loss: f64,
+}
+
+impl WindowCache {
+    fn new() -> Self {
+        Self {
+            loss_history: Vec::new(),
+            last_calc: None,
+            daily_loss: 0.0,
+            weekly_loss: 0.0,
+        }
+    }
+
+    /// Recompute cached rolling sums if more than 60 seconds have elapsed since
+    /// the last calculation.  Also prunes entries older than 7 days.
+    fn refresh(&mut self) {
+        let needs_refresh = match self.last_calc {
+            None => true,
+            Some(t) => t.elapsed().as_secs() >= 60,
+        };
+        if !needs_refresh {
+            return;
+        }
+
+        let now = Utc::now();
+        let cutoff_7d = now - Duration::hours(168);
+        let cutoff_24h = now - Duration::hours(24);
+
+        // Prune entries older than 7 days to prevent unbounded memory growth.
+        self.loss_history.retain(|(ts, _)| *ts >= cutoff_7d);
+
+        let mut daily = 0.0_f64;
+        let mut weekly = 0.0_f64;
+        for (ts, loss) in &self.loss_history {
+            if *ts >= cutoff_24h {
+                daily += loss;
+            }
+            // Everything remaining in history is already within 7 days.
+            weekly += loss;
+        }
+
+        self.daily_loss = daily;
+        self.weekly_loss = weekly;
+        self.last_calc = Some(Instant::now());
+    }
+}
+
 #[derive(Debug)]
 pub struct RiskEngine {
     cfg: RiskConfig,
     kill: Arc<AtomicBool>,
     equity: f64,
     peak_equity: f64,
+    /// Legacy fields kept for callers using `set_daily_pnl` / `set_weekly_pnl`.
+    /// Used only as fallback when no loss events have been recorded yet.
     daily_pnl: f64,
     weekly_pnl: f64,
     exposure_total: f64,
@@ -77,6 +145,9 @@ pub struct RiskEngine {
     position_qty: HashMap<String, f64>,
     consecutive_losses: u32,
     max_consecutive_losses: u32,
+
+    // ── Rolling-window loss tracking (interior-mutable so pretrade_check stays &self) ──
+    window: RefCell<WindowCache>,
 }
 
 impl RiskEngine {
@@ -96,6 +167,7 @@ impl RiskEngine {
             position_qty: HashMap::new(),
             consecutive_losses: 0,
             max_consecutive_losses: cfg.max_consecutive_losses,
+            window: RefCell::new(WindowCache::new()),
         };
         (engine, kill)
     }
@@ -110,9 +182,58 @@ impl RiskEngine {
         self.kill.store(false, Ordering::SeqCst);
     }
 
+    // ── Rolling-window helpers ────────────────────────────────────────────────
+
+    /// Record a realized loss event.  `amount` must be positive (the magnitude
+    /// of the loss).  The entry is timestamped to `Utc::now()`.
+    pub fn record_loss(&mut self, amount: f64) {
+        if amount > 0.0 {
+            self.window
+                .borrow_mut()
+                .loss_history
+                .push((Utc::now(), amount));
+            // Invalidate cache so the next check recomputes immediately.
+            self.window.borrow_mut().last_calc = None;
+        }
+    }
+
+    /// Rolling 24 h realized loss sum (positive = loss).
+    /// Falls back to the legacy `daily_pnl` field when no events have been recorded.
+    fn rolling_daily_loss(&self) -> f64 {
+        let mut w = self.window.borrow_mut();
+        if w.loss_history.is_empty() {
+            return if self.daily_pnl < 0.0 {
+                -self.daily_pnl
+            } else {
+                0.0
+            };
+        }
+        w.refresh();
+        w.daily_loss
+    }
+
+    /// Rolling 168 h realized loss sum (positive = loss).
+    /// Falls back to the legacy `weekly_pnl` field when no events have been recorded.
+    fn rolling_weekly_loss(&self) -> f64 {
+        let mut w = self.window.borrow_mut();
+        if w.loss_history.is_empty() {
+            return if self.weekly_pnl < 0.0 {
+                -self.weekly_pnl
+            } else {
+                0.0
+            };
+        }
+        w.refresh();
+        w.weekly_loss
+    }
+
+    // ── Trade lifecycle ───────────────────────────────────────────────────────
+
     pub fn on_trade_result(&mut self, profit: f64) {
         if profit < 0.0 {
             self.consecutive_losses += 1;
+            // Record the loss in the rolling window history.
+            self.record_loss(-profit); // convert to positive magnitude
             if self.consecutive_losses >= self.max_consecutive_losses {
                 eprintln!(
                     "[RISK] consecutive loss limit reached ({}/{}), tripping kill switch",
@@ -133,6 +254,8 @@ impl RiskEngine {
         self.exposure_symbol.clear();
         self.exposure_strategy.clear();
         self.position_qty.clear();
+        // Note: loss_history is intentionally NOT cleared on session reset so
+        // rolling windows remain accurate across session boundaries.
     }
 
     pub fn set_equity(&mut self, equity: f64) {
@@ -142,12 +265,19 @@ impl RiskEngine {
         }
     }
 
+    /// Legacy setter — kept for API compatibility.  Callers that have not yet
+    /// migrated to `record_loss` can continue supplying a negative daily PnL
+    /// here; it is used as a fallback when no events exist in `loss_history`.
     pub fn set_daily_pnl(&mut self, pnl: f64) {
         self.daily_pnl = pnl;
     }
+
+    /// Legacy setter — kept for API compatibility.
     pub fn set_weekly_pnl(&mut self, pnl: f64) {
         self.weekly_pnl = pnl;
     }
+
+    // ── Exposure tracking ─────────────────────────────────────────────────────
 
     /// Called after a fill. Tracks position quantity per symbol so exposure can be
     /// revalued at current mark price via `revalue_exposure`.
@@ -190,6 +320,8 @@ impl RiskEngine {
         self.exposure_total = new_total;
     }
 
+    // ── Pre-trade gate ────────────────────────────────────────────────────────
+
     pub fn pretrade_check(
         &self,
         market: Market,
@@ -207,12 +339,18 @@ impl RiskEngine {
             return Err(Reject::NoEquity);
         }
 
-        if self.daily_pnl <= -self.cfg.daily_loss_limit * self.equity {
-            return Err(Reject::DailyLossLimit);
-        }
-        if self.weekly_pnl <= -self.cfg.weekly_loss_limit * self.equity {
+        // Rolling 7-day (168 h) loss limit — checked first (higher severity).
+        let weekly_loss = self.rolling_weekly_loss();
+        if weekly_loss >= self.cfg.weekly_loss_limit * self.equity {
             return Err(Reject::WeeklyLossLimit);
         }
+
+        // Rolling 24 h loss limit.
+        let daily_loss = self.rolling_daily_loss();
+        if daily_loss >= self.cfg.daily_loss_limit * self.equity {
+            return Err(Reject::DailyLossLimit);
+        }
+
         if self.peak_equity > 0.0 {
             let dd = (self.peak_equity - self.equity) / self.peak_equity;
             if dd >= self.cfg.max_drawdown {
@@ -245,6 +383,8 @@ impl RiskEngine {
 
         Ok(())
     }
+
+    // ── Accessors ─────────────────────────────────────────────────────────────
 
     pub fn equity(&self) -> f64 {
         self.equity
@@ -298,7 +438,18 @@ mod tests {
     #[test]
     fn rejects_after_daily_loss_limit() {
         let mut e = engine(10_000.0);
-        e.set_daily_pnl(-600.0); // -6%, past 5% daily limit
+        e.set_daily_pnl(-600.0); // -6%, past 5% daily limit; triggers legacy fallback
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 100.0),
+            Err(Reject::DailyLossLimit),
+        );
+    }
+
+    #[test]
+    fn rejects_after_daily_loss_limit_via_record_loss() {
+        let mut e = engine(10_000.0);
+        // Record a loss of 600 (6% of 10_000 equity), past the 5% daily limit.
+        e.record_loss(600.0);
         assert_eq!(
             e.pretrade_check(Market::Crypto, "BTCUSDT", "trend", 100.0),
             Err(Reject::DailyLossLimit),
@@ -328,7 +479,18 @@ mod tests {
     #[test]
     fn rejects_weekly_loss_limit() {
         let mut e = engine(10_000.0);
-        e.set_weekly_pnl(-1100.0); // -11%, past 10% weekly limit
+        e.set_weekly_pnl(-1100.0); // -11%, past 10% weekly limit; triggers legacy fallback
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::WeeklyLossLimit),
+        );
+    }
+
+    #[test]
+    fn rejects_weekly_loss_limit_via_record_loss() {
+        let mut e = engine(10_000.0);
+        // 1100 loss = 11% of 10_000 equity, past 10% weekly limit.
+        e.record_loss(1100.0);
         assert_eq!(
             e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
             Err(Reject::WeeklyLossLimit),
@@ -486,6 +648,29 @@ mod tests {
         assert!(
             (e.exposure_total - 1200.0 * 1000.0).abs() < 1e-6,
             "exposure should reflect mark price * qty"
+        );
+    }
+
+    /// Verify that small losses within the 24 h window do NOT trip the daily limit.
+    #[test]
+    fn small_rolling_loss_does_not_trip_daily_limit() {
+        let mut e = engine(10_000.0);
+        e.record_loss(400.0); // 4% < 5% limit → should still be allowed
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Ok(()),
+        );
+    }
+
+    /// Verify that two `record_loss` calls accumulate correctly.
+    #[test]
+    fn rolling_losses_accumulate_across_events() {
+        let mut e = engine(10_000.0);
+        e.record_loss(300.0);
+        e.record_loss(250.0); // total 550 = 5.5% > 5% → reject
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::DailyLossLimit),
         );
     }
 }

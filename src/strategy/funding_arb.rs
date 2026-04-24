@@ -34,6 +34,14 @@ pub struct FundingArbConfig {
     pub borrow_cost_annual_pct: f64,
     /// Minimum net annualised yield (funding - borrow cost) to justify entry, as percentage.
     pub min_net_yield_pct: f64,
+    /// EMA decay factor for funding rate smoothing (0 < decay ≤ 1). Default: 0.8.
+    pub funding_ema_decay: f64,
+    /// Number of recent funding intervals to keep in the ring buffer. Default: 8.
+    pub funding_lookback: usize,
+    /// Require a positive funding rate trend before entering. Default: true.
+    pub require_positive_trend: bool,
+    /// Consecutive below-threshold intervals required before graceful exit. Default: 2.
+    pub exit_confirmation_intervals: u32,
 }
 
 impl Default for FundingArbConfig {
@@ -49,6 +57,10 @@ impl Default for FundingArbConfig {
             max_unrealised_loss_pct: 0.02,
             borrow_cost_annual_pct: 10.0,
             min_net_yield_pct: 5.0,
+            funding_ema_decay: 0.8,
+            funding_lookback: 8,
+            require_positive_trend: true,
+            exit_confirmation_intervals: 2,
         }
     }
 }
@@ -70,6 +82,10 @@ pub struct FundingCandidate {
     pub annualised_yield: f64,
     /// Composite score for ranking.
     pub score: f64,
+    /// EMA-smoothed funding rate (using configurable decay).
+    pub ema_funding_rate: f64,
+    /// Whether the funding rate trend is positive (last > first in lookback window).
+    pub trend_positive: bool,
 }
 
 /// An active funding arb position.
@@ -85,6 +101,8 @@ pub struct ActivePosition {
     pub funding_collected: f64,
     pub entry_time_ms: u64,
     pub notional: f64,
+    /// Consecutive intervals where funding was below exit_threshold (for graceful exit).
+    pub below_threshold_count: u32,
 }
 
 /// Decisions the arb engine can make.
@@ -102,18 +120,59 @@ pub enum ArbAction {
     Hold,
 }
 
+/// Compute an EMA over a slice of funding rates.
+///
+/// `decay` is the smoothing factor α (0 < α ≤ 1). Higher values weight recent
+/// observations more heavily. The EMA is seeded from the oldest observation.
+pub fn compute_ema(rates: &[f64], decay: f64) -> f64 {
+    if rates.is_empty() {
+        return 0.0;
+    }
+    let alpha = decay.clamp(0.0, 1.0);
+    let mut ema = rates[0];
+    for &r in &rates[1..] {
+        ema = alpha * r + (1.0 - alpha) * ema;
+    }
+    ema
+}
+
+/// Calculate the funding rate trend.
+///
+/// Returns `true` when the latest rate is higher than the earliest rate in the
+/// lookback window (i.e., rates are rising).
+pub fn trend_is_positive(rates: &[f64]) -> bool {
+    if rates.len() < 2 {
+        return true; // not enough data — be permissive
+    }
+    rates.last().unwrap_or(&0.0) > rates.first().unwrap_or(&0.0)
+}
+
+/// Calculate net annualised yield before entry.
+///
+/// ```text
+/// net_yield = funding_rate_8h * 3 * 365 * 100   (annualised %)
+///           - borrow_cost_annual_pct
+///           - 2 * taker_fee_pct
+/// ```
+pub fn net_yield(funding_rate_8h: f64, borrow_cost_annual_pct: f64, taker_fee: f64) -> f64 {
+    let gross_apy = funding_rate_8h * 3.0 * 365.0 * 100.0;
+    let fee_cost = 2.0 * taker_fee * 100.0; // entry + exit taker fees as percentage
+    gross_apy - borrow_cost_annual_pct - fee_cost
+}
+
 /// Score and rank funding rate candidates.
 pub fn rank_candidates<'a>(
     candidates: &'a mut [FundingCandidate],
     config: &FundingArbConfig,
 ) -> Vec<&'a FundingCandidate> {
-    // Filter by thresholds
+    // Filter by thresholds — use EMA rate for entry decision
     let mut viable: Vec<&FundingCandidate> = candidates
         .iter()
         .filter(|c| {
-            c.funding_rate >= config.entry_threshold
+            c.ema_funding_rate >= config.entry_threshold
                 && c.turnover_24h >= config.min_turnover
                 && c.positive_streak >= config.min_positive_intervals
+                && (!config.require_positive_trend || c.trend_positive)
         })
         .collect();
 
@@ -151,54 +210,125 @@ pub fn position_size(equity: f64, config: &FundingArbConfig, mark_price: f64) ->
 }
 
 /// Decide whether to enter, exit, or hold for each position/candidate.
+///
+/// Returns a new list of `ActivePosition` with updated counters alongside
+/// the list of `ArbAction`s, so callers can replace their state.
 pub fn evaluate_positions(
     active: &[ActivePosition],
     candidates: &[FundingCandidate],
     config: &FundingArbConfig,
     equity: f64,
 ) -> Vec<ArbAction> {
+    evaluate_positions_with_fee(active, candidates, config, equity, 0.001)
+}
+
+/// Like `evaluate_positions` but accepts an explicit taker fee rate.
+pub fn evaluate_positions_with_fee(
+    active: &[ActivePosition],
+    candidates: &[FundingCandidate],
+    config: &FundingArbConfig,
+    equity: f64,
+    taker_fee: f64,
+) -> Vec<ArbAction> {
     let mut actions = Vec::new();
+
+    // Early-exit EMA threshold: exit if EMA < exit_threshold × 1.5
+    let early_exit_ema_threshold = config.exit_threshold * 1.5;
 
     // Check active positions for exit signals
     for pos in active {
         let current = candidates.iter().find(|c| c.symbol == pos.symbol);
-        let should_exit = match current {
+
+        let exit_reason: Option<String> = match current {
+            None => Some("symbol missing from tickers".to_string()),
             Some(c) => {
-                // Funding flipped negative
-                c.funding_rate < config.exit_threshold
+                // Early exit: EMA already well below exit threshold
+                if c.ema_funding_rate < early_exit_ema_threshold {
+                    Some(format!(
+                        "EMA funding rate early-exit ({:.4}% < {:.4}% threshold×1.5)",
+                        c.ema_funding_rate * 100.0,
+                        early_exit_ema_threshold * 100.0,
+                    ))
+                } else if c.ema_funding_rate < config.exit_threshold {
+                    // Graceful exit: require N consecutive below-threshold intervals
+                    let count = pos.below_threshold_count + 1;
+                    if count >= config.exit_confirmation_intervals {
+                        Some(format!(
+                            "EMA funding rate below exit threshold for {} consecutive intervals ({:.4}%)",
+                            count,
+                            c.ema_funding_rate * 100.0,
+                        ))
+                    } else {
+                        // Not yet enough confirmations — hold, counter will be updated externally
+                        None
+                    }
+                } else {
+                    None
+                }
             }
-            None => true, // symbol disappeared from tickers
         };
 
-        if should_exit {
+        if let Some(reason) = exit_reason {
             actions.push(ArbAction::Exit {
                 symbol: pos.symbol.clone(),
-                reason: format!(
-                    "funding rate below exit threshold ({})",
-                    current
-                        .map(|c| format!("{:.4}%", c.funding_rate * 100.0))
-                        .unwrap_or_else(|| "symbol missing".to_string())
-                ),
+                reason,
             });
         }
     }
 
     // Look for new entry opportunities (if we have capacity)
-    let active_symbols: std::collections::HashSet<&str> =
-        active.iter().map(|p| p.symbol.as_str()).collect();
-    let remaining_slots = config.max_positions.saturating_sub(active.len());
+    let exiting_symbols: std::collections::HashSet<&str> = actions
+        .iter()
+        .filter_map(|a| {
+            if let ArbAction::Exit { symbol, .. } = a {
+                Some(symbol.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let active_symbols: std::collections::HashSet<&str> = active
+        .iter()
+        .filter(|p| !exiting_symbols.contains(p.symbol.as_str()))
+        .map(|p| p.symbol.as_str())
+        .collect();
+    let remaining_slots = config.max_positions.saturating_sub(active_symbols.len());
 
     if remaining_slots > 0 {
         let mut entry_candidates: Vec<&FundingCandidate> = candidates
             .iter()
             .filter(|c| {
-                // Net yield = funding yield - borrow cost; skip if insufficient
-                let net_yield = c.annualised_yield - config.borrow_cost_annual_pct;
-                c.funding_rate >= config.entry_threshold
-                    && c.turnover_24h >= config.min_turnover
-                    && c.positive_streak >= config.min_positive_intervals
-                    && net_yield >= config.min_net_yield_pct
-                    && !active_symbols.contains(c.symbol.as_str())
+                if active_symbols.contains(c.symbol.as_str()) {
+                    return false;
+                }
+                // Use EMA for entry decision instead of raw rate
+                if c.ema_funding_rate < config.entry_threshold {
+                    return false;
+                }
+                if c.turnover_24h < config.min_turnover {
+                    return false;
+                }
+                if c.positive_streak < config.min_positive_intervals {
+                    return false;
+                }
+                // Trend filter
+                if config.require_positive_trend && !c.trend_positive {
+                    return false;
+                }
+                // Net yield gate: annualise the EMA rate for a more conservative estimate
+                let calc_net_yield =
+                    net_yield(c.ema_funding_rate, config.borrow_cost_annual_pct, taker_fee);
+                if calc_net_yield < config.min_net_yield_pct {
+                    info!(
+                        symbol = %c.symbol,
+                        ema_rate = format!("{:.4}%", c.ema_funding_rate * 100.0),
+                        net_yield = format!("{:.2}%", calc_net_yield),
+                        min_net_yield = format!("{:.2}%", config.min_net_yield_pct),
+                        "skipping entry: net yield below minimum",
+                    );
+                    return false;
+                }
+                true
             })
             .collect();
 
@@ -211,10 +341,18 @@ pub fn evaluate_positions(
         for candidate in entry_candidates.into_iter().take(remaining_slots) {
             let qty = position_size(equity, config, candidate.mark_price);
             if qty > 0.0 {
+                let calc_net_yield = net_yield(
+                    candidate.ema_funding_rate,
+                    config.borrow_cost_annual_pct,
+                    taker_fee,
+                );
                 info!(
                     symbol = %candidate.symbol,
-                    funding_rate = format!("{:.4}%", candidate.funding_rate * 100.0),
+                    raw_rate = format!("{:.4}%", candidate.funding_rate * 100.0),
+                    ema_rate = format!("{:.4}%", candidate.ema_funding_rate * 100.0),
                     annualised = format!("{:.1}%", candidate.annualised_yield),
+                    net_yield = format!("{:.2}%", calc_net_yield),
+                    trend_positive = candidate.trend_positive,
                     streak = candidate.positive_streak,
                     "entering funding arb position",
                 );
@@ -235,6 +373,8 @@ pub fn evaluate_positions(
 }
 
 /// Build FundingCandidate from raw ticker + funding history data.
+///
+/// `ema_decay` is the EMA smoothing factor α. Pass `0.8` for the default.
 pub fn build_candidate(
     symbol: String,
     funding_rate: f64,
@@ -243,6 +383,29 @@ pub fn build_candidate(
     turnover_24h: f64,
     open_interest: f64,
     historical_rates: &[f64],
+) -> FundingCandidate {
+    build_candidate_with_ema(
+        symbol,
+        funding_rate,
+        next_funding_time_ms,
+        mark_price,
+        turnover_24h,
+        open_interest,
+        historical_rates,
+        0.8,
+    )
+}
+
+/// Build FundingCandidate with an explicit EMA decay parameter.
+pub fn build_candidate_with_ema(
+    symbol: String,
+    funding_rate: f64,
+    next_funding_time_ms: u64,
+    mark_price: f64,
+    turnover_24h: f64,
+    open_interest: f64,
+    historical_rates: &[f64],
+    ema_decay: f64,
 ) -> FundingCandidate {
     let avg = if historical_rates.is_empty() {
         funding_rate
@@ -255,6 +418,14 @@ pub fn build_candidate(
         .rev()
         .take_while(|&&r| r > 0.0)
         .count();
+
+    // Build EMA window: historical rates + current rate as the final observation
+    let mut ema_window: Vec<f64> = historical_rates.to_vec();
+    if ema_window.last().copied().unwrap_or(f64::NAN) != funding_rate {
+        ema_window.push(funding_rate);
+    }
+    let ema = compute_ema(&ema_window, ema_decay);
+    let trend = trend_is_positive(&ema_window);
 
     let apy = annualised_yield(funding_rate);
     let score = compute_score(funding_rate, avg, streak, turnover_24h);
@@ -270,6 +441,8 @@ pub fn build_candidate(
         positive_streak: streak,
         annualised_yield: apy,
         score,
+        ema_funding_rate: ema,
+        trend_positive: trend,
     }
 }
 
@@ -357,6 +530,7 @@ mod tests {
             funding_collected: 0.5,
             entry_time_ms: 0,
             notional: 5000.0,
+            below_threshold_count: 2, // already at confirmation limit so exit fires immediately
         }];
         let candidates = vec![make_candidate("BTCUSDT", -0.0001, 10_000_000.0, 0)];
         let actions = evaluate_positions(&active, &candidates, &cfg, 100_000.0);
@@ -370,6 +544,8 @@ mod tests {
             min_turnover: 1_000_000.0,
             min_positive_intervals: 3,
             max_positions: 2,
+            // Disable trend filter: make_candidate uses identical rates so trend_positive=false
+            require_positive_trend: false,
             ..default_cfg()
         };
         let candidates = vec![
@@ -398,6 +574,7 @@ mod tests {
             funding_collected: 0.0,
             entry_time_ms: 0,
             notional: 5000.0,
+            below_threshold_count: 0,
         }];
         let candidates = vec![make_candidate("BTCUSDT", 0.0005, 50_000_000.0, 10)];
         let actions = evaluate_positions(&active, &candidates, &cfg, 100_000.0);
@@ -428,6 +605,7 @@ mod tests {
             funding_collected: 0.0,
             entry_time_ms: 0,
             notional: 5000.0,
+            below_threshold_count: 0,
         }];
         let candidates = vec![make_candidate("ETHUSDT", 0.0005, 50_000_000.0, 10)];
         let actions = evaluate_positions(&active, &candidates, &cfg, 100_000.0);
