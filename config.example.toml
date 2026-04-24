@@ -57,6 +57,10 @@ auto_rebalance = false
 # Trailing profit: threshold in quote currency (0 = disabled)
 trailing_profit_threshold = 0.0
 
+# Use maker orders (PostOnly) to pay 0.02% fee instead of 0.1% taker fee.
+# On rejection (price too close to spread), bot adjusts by one tick and retries once.
+use_post_only = true  # Use maker orders (0.02% fee) instead of taker (0.1% fee)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Risk management
 # ─────────────────────────────────────────────────────────────────────────────

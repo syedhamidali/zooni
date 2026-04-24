@@ -1460,6 +1460,10 @@ mod tests {
             cancel_existing_on_start: true,
             auto_rebalance: false,
             trailing_profit_threshold: 0.0,
+            cancel_buys_on_trend: false,
+            auto_recenter: false,
+            recenter_threshold_pct: 0.15,
+            use_post_only: true,
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", false);
         assert!(result.total_fills > 0, "should have at least one fill");
@@ -1499,6 +1503,10 @@ mod tests {
             cancel_existing_on_start: true,
             auto_rebalance: false,
             trailing_profit_threshold: 0.0,
+            cancel_buys_on_trend: false,
+            auto_recenter: false,
+            recenter_threshold_pct: 0.15,
+            use_post_only: true,
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", true);
         assert!(result.bars_processed == 500);

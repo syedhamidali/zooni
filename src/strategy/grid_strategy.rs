@@ -277,6 +277,9 @@ mod tests {
             upper_price: 110.0,
             levels: 6,
             qty_per_level: 1.0,
+            cancel_buys_on_trend: false,
+            auto_recenter: false,
+            recenter_threshold_pct: 0.15,
         })
     }
 

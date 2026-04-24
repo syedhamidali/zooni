@@ -307,6 +307,7 @@ mod tests {
             rsi: 50.0,
             bb_bandwidth: 0.03,
             volatility_pct: vol_pct,
+            atr: 0.0,
             grid_suitable: true,
             suggested_range: None,
             suggested_levels: None,
