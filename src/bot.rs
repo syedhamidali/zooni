@@ -670,6 +670,11 @@ async fn run_inner(
                     series.push_price(price);
                     drop(series);
                     tui_state.lock().await.current_price = price;
+
+                    // Revalue risk exposure at current mark price (not stale entry price)
+                    let mut mark_prices = std::collections::HashMap::new();
+                    mark_prices.insert(cfg.grid.symbol.clone(), price);
+                    engine.lock().await.revalue_exposure(&mark_prices);
                 }
 
                 // Dynamic grid rebalancing
