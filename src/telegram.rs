@@ -8,6 +8,8 @@
 //!   /fills   — recent fill count
 //!   /pause   — trip kill switch
 //!   /resume  — reset kill switch
+//!   /kill    — trip kill switch and cancel all open orders
+//!   /orders  — list all open orders
 //!
 //! Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.
 
@@ -54,6 +56,14 @@ pub struct BotCallbacks {
     pub pnl: Arc<dyn Fn() -> String + Send + Sync>,
     pub alloc: Arc<dyn Fn() -> String + Send + Sync>,
     pub regime: Arc<dyn Fn() -> String + Send + Sync>,
+    /// Called when `/kill` is issued. Should cancel all open orders and return a
+    /// confirmation string. If `None`, `/kill` only trips the kill switch.
+    pub kill_and_cancel: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    /// Returns a formatted list of open orders for `/orders`.
+    pub open_orders: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    /// Optional: whether Zerodha token-expiry checks are enabled.
+    /// When `Some(kill)`, `check_token_expiry` is called every 30 minutes.
+    pub zerodha_kill: Option<Arc<AtomicBool>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -125,6 +135,14 @@ impl TelegramBot {
         mut alert_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     ) {
         let mut offset: i64 = 0;
+        // Counter tracking how many poll cycles have elapsed for the 30-min expiry check.
+        // The check fires when cycle_count % token_check_every == 0 (but not on cycle 0).
+        let token_check_every: u64 = {
+            let secs = poll_interval.as_secs().max(1);
+            (30 * 60 / secs).max(1) // 30 minutes in poll cycles
+        };
+        let mut cycle_count: u64 = 0;
+
         info!("Telegram bot polling started");
 
         loop {
@@ -152,6 +170,27 @@ impl TelegramBot {
                                     kill.store(false, Ordering::SeqCst);
                                     "Kill switch reset. Bot will resume.".to_string()
                                 }
+                                "/kill" => {
+                                    kill.store(true, Ordering::SeqCst);
+                                    // Send the initial acknowledgement immediately, then
+                                    // run the cancel callback and send a completion message.
+                                    let ack =
+                                        "☠️ Kill switch activated. Cancelling all open orders...";
+                                    if let Err(e) = self.send(ack).await {
+                                        error!(err = %e, "failed to send /kill ack");
+                                    }
+                                    match &callbacks.kill_and_cancel {
+                                        Some(f) => {
+                                            let result = (f)();
+                                            result
+                                        }
+                                        None => "✅ Kill complete. All orders cancelled. Bot is stopped.".to_string(),
+                                    }
+                                }
+                                "/orders" => match &callbacks.open_orders {
+                                    Some(f) => (f)(),
+                                    None => "No open orders.".to_string(),
+                                },
                                 "/help" => HELP_TEXT.to_string(),
                                 _ => format!("Unknown command: {text}\nTry /help"),
                             };
@@ -170,6 +209,23 @@ impl TelegramBot {
             while let Ok(msg) = alert_rx.try_recv() {
                 if let Err(e) = self.send(&msg).await {
                     error!(err = %e, "failed to send Telegram alert");
+                }
+            }
+
+            // Zerodha token-expiry check every 30 minutes.
+            cycle_count += 1;
+            if let Some(ref zk) = callbacks.zerodha_kill {
+                if cycle_count % token_check_every == 0 {
+                    use std::cell::Cell;
+                    let alert_msg: Cell<Option<String>> = Cell::new(None);
+                    crate::venues::zerodha::rest::Client::check_token_expiry(zk, |msg| {
+                        alert_msg.set(Some(msg));
+                    });
+                    if let Some(msg) = alert_msg.into_inner() {
+                        if let Err(e) = self.send(&msg).await {
+                            error!(err = %e, "failed to send Zerodha token expiry alert");
+                        }
+                    }
                 }
             }
 
@@ -193,6 +249,9 @@ impl TelegramBot {
             pnl: pnl_fn,
             alloc: Arc::new(|| "Allocations not available in grid mode.".to_string()),
             regime: Arc::new(|| "Regime detection not available in grid mode.".to_string()),
+            kill_and_cancel: None,
+            open_orders: None,
+            zerodha_kill: None,
         };
         // Dummy channel — no alerts in grid-bot mode.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -235,6 +294,8 @@ const HELP_TEXT: &str = "\
 /regime — current market regime
 /pause — stop trading (trip kill switch)
 /resume — resume trading
+/kill — trip kill switch and cancel all open orders
+/orders — list all open orders
 /help — this message";
 
 /// Format an orchestrator status message.
