@@ -46,6 +46,8 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             max_positions: fa.max_positions,
             min_positive_intervals: fa.min_positive_intervals,
             max_unrealised_loss_pct: fa.max_unrealised_loss_pct,
+            borrow_cost_annual_pct: fa.borrow_cost_annual_pct,
+            min_net_yield_pct: fa.min_net_yield_pct,
         })
         .unwrap_or_default();
 

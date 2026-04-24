@@ -17,6 +17,7 @@ pub struct StrategyPerformance {
     pub peak_pnl: f64,
     pub max_drawdown: f64,
     pub ema_reward: f64,
+    all_returns: Vec<f64>,
     recent_returns: Vec<f64>,
     max_recent: usize,
     regime_pnl: HashMap<String, f64>,
@@ -35,6 +36,7 @@ impl StrategyPerformance {
             peak_pnl: 0.0,
             max_drawdown: 0.0,
             ema_reward: 0.0,
+            all_returns: Vec::new(),
             recent_returns: Vec::new(),
             max_recent: 50,
             regime_pnl: HashMap::new(),
@@ -67,6 +69,7 @@ impl StrategyPerformance {
 
         self.ema_reward = ema_decay * self.ema_reward + (1.0 - ema_decay) * pnl;
 
+        self.all_returns.push(pnl);
         self.recent_returns.push(pnl);
         if self.recent_returns.len() > self.max_recent {
             self.recent_returns.remove(0);
@@ -90,13 +93,13 @@ impl StrategyPerformance {
     }
 
     pub fn sharpe_estimate(&self) -> f64 {
-        if self.recent_returns.len() < 2 {
+        if self.all_returns.len() < 2 {
             return 0.0;
         }
-        let n = self.recent_returns.len() as f64;
-        let mean = self.recent_returns.iter().sum::<f64>() / n;
+        let n = self.all_returns.len() as f64;
+        let mean = self.all_returns.iter().sum::<f64>() / n;
         let variance = self
-            .recent_returns
+            .all_returns
             .iter()
             .map(|r| (r - mean).powi(2))
             .sum::<f64>()

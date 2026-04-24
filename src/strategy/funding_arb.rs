@@ -29,6 +29,11 @@ pub struct FundingArbConfig {
     pub min_positive_intervals: usize,
     /// Maximum unrealised loss before force-closing (fraction of position).
     pub max_unrealised_loss_pct: f64,
+    /// Estimated annual borrowing/short cost as percentage (e.g. 10.0 = 10% APR).
+    /// Deducted from annualised yield to compute net carry. Skip entry if net < min_net_yield_pct.
+    pub borrow_cost_annual_pct: f64,
+    /// Minimum net annualised yield (funding - borrow cost) to justify entry, as percentage.
+    pub min_net_yield_pct: f64,
 }
 
 impl Default for FundingArbConfig {
@@ -42,6 +47,8 @@ impl Default for FundingArbConfig {
             max_positions: 3,
             min_positive_intervals: 3,
             max_unrealised_loss_pct: 0.02,
+            borrow_cost_annual_pct: 10.0,
+            min_net_yield_pct: 5.0,
         }
     }
 }
@@ -185,9 +192,12 @@ pub fn evaluate_positions(
         let mut entry_candidates: Vec<&FundingCandidate> = candidates
             .iter()
             .filter(|c| {
+                // Net yield = funding yield - borrow cost; skip if insufficient
+                let net_yield = c.annualised_yield - config.borrow_cost_annual_pct;
                 c.funding_rate >= config.entry_threshold
                     && c.turnover_24h >= config.min_turnover
                     && c.positive_streak >= config.min_positive_intervals
+                    && net_yield >= config.min_net_yield_pct
                     && !active_symbols.contains(c.symbol.as_str())
             })
             .collect();

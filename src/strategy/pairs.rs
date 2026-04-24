@@ -5,7 +5,10 @@
 //! Enters when the z-score of the log-spread exceeds a threshold, exits on mean
 //! reversion, and stops out if the spread diverges too far.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use super::{FillEvent, MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::indicators;
@@ -75,6 +78,13 @@ pub struct PairsStrategy {
     ticks_count: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct PairsSnapshot {
+    prices_a: Vec<f64>,
+    prices_b: Vec<f64>,
+    ticks_count: u64,
+}
+
 impl PairsStrategy {
     pub fn new(config: PairsConfig) -> Self {
         Self {
@@ -84,6 +94,20 @@ impl PairsStrategy {
             position: None,
             ticks_count: 0,
         }
+    }
+
+    fn snapshot(&self) -> PairsSnapshot {
+        PairsSnapshot {
+            prices_a: self.prices_a.clone(),
+            prices_b: self.prices_b.clone(),
+            ticks_count: self.ticks_count,
+        }
+    }
+
+    fn restore(&mut self, snap: PairsSnapshot) {
+        self.prices_a = snap.prices_a;
+        self.prices_b = snap.prices_b;
+        self.ticks_count = snap.ticks_count;
     }
 
     pub fn hedge_ratio(&self) -> f64 {
@@ -329,6 +353,34 @@ impl Strategy for PairsStrategy {
                 symbol: self.config.symbol_b.clone(),
             },
         ])
+    }
+
+    fn tunable_params(&self) -> HashMap<String, f64> {
+        let mut m = HashMap::new();
+        m.insert("entry_z_score".into(), self.config.entry_z_score);
+        m.insert("exit_z_score".into(), self.config.exit_z_score);
+        m.insert("stop_z_score".into(), self.config.stop_z_score);
+        m.insert("position_size_quote".into(), self.config.position_size_quote);
+        m.insert("min_correlation".into(), self.config.min_correlation);
+        m
+    }
+
+    fn apply_params(&mut self, params: &HashMap<String, f64>) {
+        if let Some(&v) = params.get("entry_z_score") { self.config.entry_z_score = v; }
+        if let Some(&v) = params.get("exit_z_score") { self.config.exit_z_score = v; }
+        if let Some(&v) = params.get("stop_z_score") { self.config.stop_z_score = v; }
+        if let Some(&v) = params.get("position_size_quote") { self.config.position_size_quote = v; }
+        if let Some(&v) = params.get("min_correlation") { self.config.min_correlation = v; }
+    }
+
+    fn save_state(&self) -> Option<String> {
+        serde_json::to_string(&self.snapshot()).ok()
+    }
+
+    fn load_state(&mut self, json: &str) {
+        if let Ok(snap) = serde_json::from_str::<PairsSnapshot>(json) {
+            self.restore(snap);
+        }
     }
 }
 
