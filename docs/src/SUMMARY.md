@@ -14,6 +14,7 @@
 - [Risk Management](./concepts/risk-management.md)
 - [Market Intelligence](./concepts/market-intelligence.md)
 - [Auto-Pilot Mode](./concepts/autopilot.md)
+- [Funding Rate Arbitrage](./concepts/funding-arb.md)
 
 # Tools
 

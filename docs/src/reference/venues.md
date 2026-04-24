@@ -2,9 +2,9 @@
 
 ## Bybit (Active)
 
-Full implementation for Bybit spot markets via the V5 API.
+Full implementation for Bybit spot and perpetual futures markets via the V5 API.
 
-### Capabilities
+### Spot Capabilities
 
 | Feature | Status |
 |---------|--------|
@@ -20,6 +20,20 @@ Full implementation for Bybit spot markets via the V5 API.
 | WebSocket (private) | Implemented |
 | Testnet support | Implemented |
 
+### Linear / Perpetual Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Linear tickers (funding rate, mark price, OI) | Implemented |
+| Funding rate history | Implemented |
+| Place linear orders (with `reduce_only`) | Implemented |
+| Cancel linear orders | Implemented |
+| Cancel all linear orders | Implemented |
+| Open orders (linear) | Implemented |
+| Position queries (unrealised P&L) | Implemented |
+| Set leverage | Implemented |
+| Instrument info (linear) | Implemented |
+
 ### Endpoints
 
 | Environment | Base URL |
@@ -33,6 +47,53 @@ Uses V5 unified API. All endpoints go through `/v5/`.
 
 ---
 
+## Zerodha (Active)
+
+Full implementation for Indian equities, F&O, and commodities via Kite Connect v3.
+
+### Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Place orders (regular, AMO, CO, iceberg) | Implemented |
+| Modify / cancel orders | Implemented |
+| Order book & trade book | Implemented |
+| Positions & holdings | Implemented |
+| Margins (equity + commodity) | Implemented |
+| User profile | Implemented |
+| Instrument master (CSV) | Implemented |
+| Market quotes (LTP, OHLC, full) | Implemented |
+| Session token exchange (SHA256 checksum) | Implemented |
+| Binary WebSocket ticker (LTP, Quote, Full + L5 depth) | Implemented |
+| Auto-reconnect WebSocket | Implemented |
+
+### Supported Exchanges
+
+| Exchange | Segment |
+|----------|---------|
+| NSE | Equity, F&O |
+| BSE | Equity, F&O |
+| MCX | Commodities |
+| CDS | Currency derivatives |
+| BFO | BSE F&O |
+
+### Authentication
+
+Zerodha uses a daily access token flow:
+
+1. Redirect user to `login_url()` (Kite login page)
+2. Receive `request_token` via callback
+3. Exchange for `access_token` using SHA256 checksum of `api_key + request_token + api_secret`
+4. Token is valid for one trading day
+
+### Notes
+- Access token must be refreshed daily (before market open)
+- WebSocket uses a binary protocol — prices are in paise (÷ 100 for rupees)
+- Full tick mode provides Level 5 market depth (5 best bid/ask levels)
+- Requires a Kite Connect subscription from Zerodha
+
+---
+
 ## Hyperliquid (Planned)
 
 Skeleton implementation exists. REST and WebSocket stubs are in place.
@@ -41,22 +102,6 @@ Skeleton implementation exists. REST and WebSocket stubs are in place.
 - Perpetual futures trading
 - On-chain order book
 - No KYC required
-
----
-
-## Zerodha (Planned)
-
-Skeleton implementation for Indian equities via Kite Connect v3.
-
-### Target Features
-- NSE/BSE equity trading
-- F&O (futures and options)
-- MCX commodities (via Zerodha's MCX membership)
-- Market hours awareness for Indian sessions
-
-### Notes
-- MCX (Multi Commodity Exchange) is accessed through Indian brokers like Zerodha, not as a standalone API
-- Requires Zerodha Kite Connect subscription
 
 ---
 

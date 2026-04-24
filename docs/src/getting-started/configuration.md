@@ -37,12 +37,14 @@ starting_equity_quote = 10000.0
 | Section | Purpose |
 |---------|---------|
 | `[bot]` | Dry-run, database path, retry/circuit-breaker settings |
-| `[bybit]` | Exchange API credentials and endpoint settings |
+| `[bybit]` | Bybit API credentials and endpoint settings |
+| `[zerodha]` | Zerodha Kite Connect credentials (optional) |
 | `[grid]` | Grid strategy parameters (symbol, range, levels, qty) |
 | `[risk]` | Exposure limits, loss caps, drawdown thresholds |
 | `[alerts]` | Webhook URL and notification filters |
 | `[autopilot]` | Autonomous mode settings |
 | `[autopilot.scanner]` | Market scanner tuning |
+| `[funding_arb]` | Funding rate arbitrage settings (optional) |
 
 See the [Configuration Reference](../reference/config.md) for a complete field-by-field listing.
 
