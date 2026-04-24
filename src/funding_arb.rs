@@ -20,7 +20,7 @@ use crate::persistence::{Db, FillRow};
 use crate::retry::{CircuitBreaker, RetryPolicy, with_retry};
 use crate::risk::{Market, RiskConfig, RiskEngine};
 use crate::strategy::funding_arb::{
-    ActivePosition, ArbAction, FundingArbConfig, FundingCandidate, build_candidate,
+    ActivePosition, ArbAction, FundingArbConfig, FundingCandidate, build_candidate_with_ema,
     evaluate_positions,
 };
 use crate::types::Side;
@@ -48,6 +48,10 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             max_unrealised_loss_pct: fa.max_unrealised_loss_pct,
             borrow_cost_annual_pct: fa.borrow_cost_annual_pct,
             min_net_yield_pct: fa.min_net_yield_pct,
+            funding_ema_decay: fa.funding_ema_decay,
+            funding_lookback: fa.funding_lookback,
+            require_positive_trend: fa.require_positive_trend,
+            exit_confirmation_intervals: fa.exit_confirmation_intervals,
         })
         .unwrap_or_default();
 
@@ -233,20 +237,28 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                 continue;
             }
 
-            // Fetch recent funding history for streak calculation
+            // Fetch recent funding history for streak/EMA calculation
+            let lookback = arb_cfg.funding_lookback.max(1);
             let historical_rates = if !dry_run {
-                match client.funding_rate_history(&t.symbol, 10).await {
-                    Ok(entries) => entries
-                        .iter()
-                        .map(|e| e.funding_rate.parse::<f64>().unwrap_or(0.0))
-                        .collect::<Vec<_>>(),
+                match client.funding_rate_history(&t.symbol, (lookback + 1) as u32).await {
+                    Ok(entries) => {
+                        let mut rates: Vec<f64> = entries
+                            .iter()
+                            .map(|e| e.funding_rate.parse::<f64>().unwrap_or(0.0))
+                            .collect();
+                        // Keep at most `lookback` recent intervals (oldest first)
+                        if rates.len() > lookback {
+                            rates = rates[rates.len() - lookback..].to_vec();
+                        }
+                        rates
+                    }
                     Err(_) => vec![rate],
                 }
             } else {
-                vec![rate; 5]
+                vec![rate; lookback.min(5)]
             };
 
-            let candidate = build_candidate(
+            let candidate = build_candidate_with_ema(
                 t.symbol.clone(),
                 rate,
                 next_time,
@@ -254,6 +266,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                 turnover,
                 oi,
                 &historical_rates,
+                arb_cfg.funding_ema_decay,
             );
             candidates.push(candidate);
         }
@@ -316,7 +329,18 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             }
         }
 
-        // -- 5. Evaluate actions
+        // -- 5. Update graceful-exit counters before evaluating
+        for pos in &mut active_positions {
+            if let Some(c) = candidates.iter().find(|c| c.symbol == pos.symbol) {
+                if c.ema_funding_rate < arb_cfg.exit_threshold {
+                    pos.below_threshold_count += 1;
+                } else {
+                    pos.below_threshold_count = 0;
+                }
+            }
+        }
+
+        // -- 5b. Evaluate actions
         let equity = engine.lock().await.equity();
         let actions = evaluate_positions(&active_positions, &candidates, &arb_cfg, equity);
 
@@ -352,6 +376,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                             funding_collected: 0.0,
                             entry_time_ms: Utc::now().timestamp_millis() as u64,
                             notional: mark * qty_f,
+                            below_threshold_count: 0,
                         });
                         info!(symbol = %symbol, "[DRY-RUN] position simulated");
                         continue;
@@ -477,6 +502,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                         funding_collected: 0.0,
                         entry_time_ms: Utc::now().timestamp_millis() as u64,
                         notional,
+                        below_threshold_count: 0,
                     });
 
                     // Update risk engine
