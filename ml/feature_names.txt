@@ -1,0 +1,7 @@
+adx
+rsi
+bb_width
+atr_ratio
+volume_ratio
+returns_std_5d
+returns_std_20d

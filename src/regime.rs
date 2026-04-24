@@ -2,8 +2,13 @@
 //!
 //! Determines whether a market is trending (bad for grid) or ranging (good for grid),
 //! and recommends strategy parameters accordingly.
+//!
+//! When `use_ml_regime = true` **and** the ONNX model file exists, the regime
+//! is decided by the ML classifier (`src/ml_regime.rs`).  Otherwise the
+//! classic ADX/RSI/BB heuristic is used as a fallback.
 
 use crate::indicators;
+use crate::ml_regime::MlRegimeClassifier;
 use crate::venue::VenueKline as Kline;
 
 /// Market regime classification.
@@ -53,25 +58,136 @@ pub struct RegimeAnalysis {
     pub suggested_levels: Option<u32>,
 }
 
+/// Configuration for the regime detector.
+#[derive(Debug, Clone)]
+pub struct RegimeDetectorConfig {
+    /// If `true`, use the ML classifier when the model file is present.
+    /// Falls back to ADX heuristics when `false` or when the file is missing.
+    pub use_ml_regime: bool,
+    /// Path to the ONNX model file.  Default: `"ml/regime_classifier.onnx"`.
+    pub ml_model_path: String,
+}
+
+impl Default for RegimeDetectorConfig {
+    fn default() -> Self {
+        Self {
+            use_ml_regime: false,
+            ml_model_path: "ml/regime_classifier.onnx".to_string(),
+        }
+    }
+}
+
 /// Stateful regime detector with hysteresis to prevent flip-flopping on ADX noise.
 ///
 /// Wrap `analyze()` with this when you need persistent state across ticks.
-#[derive(Debug, Default)]
+///
+/// Set `config.use_ml_regime = true` to activate the ONNX classifier.
 pub struct RegimeDetector {
     /// Last confirmed regime (used for hysteresis).
     pub last_regime: Option<Regime>,
+    /// ML classifier — loaded lazily on first use.
+    ml_classifier: Option<MlRegimeClassifier>,
+    /// Detector configuration.
+    config: RegimeDetectorConfig,
+}
+
+impl std::fmt::Debug for RegimeDetector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegimeDetector")
+            .field("last_regime", &self.last_regime)
+            .field("ml_loaded", &self.ml_classifier.is_some())
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl Default for RegimeDetector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RegimeDetector {
+    /// Create a detector with default config (ADX heuristic only).
     pub fn new() -> Self {
-        Self::default()
+        Self::with_config(RegimeDetectorConfig::default())
+    }
+
+    /// Create a detector with the given configuration.
+    pub fn with_config(config: RegimeDetectorConfig) -> Self {
+        let ml_classifier = if config.use_ml_regime {
+            match MlRegimeClassifier::load(&config.ml_model_path) {
+                Ok(clf) => {
+                    tracing::info!(
+                        path = %config.ml_model_path,
+                        "ML regime classifier loaded"
+                    );
+                    Some(clf)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %config.ml_model_path,
+                        error = %e,
+                        "ML regime model not loaded — falling back to ADX heuristic"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Self {
+            last_regime: None,
+            ml_classifier,
+            config,
+        }
     }
 
     /// Analyze klines and apply hysteresis: once Ranging, keep Ranging until ADX > 22.
     ///
+    /// When the ML classifier is loaded, its binary Ranging/Trending prediction
+    /// overrides the ADX regime (Volatile still takes precedence).
+    ///
     /// # Hysteresis prevents regime flip-flopping on ADX noise
     pub fn analyze(&mut self, klines: &[Kline]) -> Option<RegimeAnalysis> {
         let mut result = analyze(klines)?;
+
+        // ML override: if classifier is present and the baseline isn't Volatile,
+        // replace the regime with the ML prediction.
+        if let Some(ref clf) = self.ml_classifier {
+            if !matches!(result.regime, Regime::Volatile) {
+                let vol_ratio = 1.0_f32; // volume_ratio not available from klines here; use neutral
+                match clf.predict(
+                    result.adx as f32,
+                    result.rsi as f32,
+                    result.bb_bandwidth as f32,
+                    (result.atr / (klines.last().map(|k| k.close).unwrap_or(1.0))) as f32,
+                    vol_ratio,
+                    0.0_f32, // returns_std_5d — not cached here; neutral
+                    0.0_f32, // returns_std_20d — not cached here; neutral
+                ) {
+                    Ok(is_ranging) => {
+                        result.regime = if is_ranging {
+                            Regime::Ranging
+                        } else {
+                            // Use RSI direction for trending sub-classification
+                            if result.rsi >= 50.0 {
+                                Regime::TrendingUp
+                            } else {
+                                Regime::TrendingDown
+                            }
+                        };
+                        result.grid_suitable = is_ranging
+                            || (matches!(result.regime, Regime::TrendingUp)
+                                && result.adx < 30.0);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ML regime inference failed — using ADX fallback");
+                    }
+                }
+            }
+        }
 
         // Hysteresis prevents regime flip-flopping on ADX noise
         if let Some(Regime::Ranging) = self.last_regime {
