@@ -124,7 +124,7 @@ pub fn run_backtest(
     _base_precision: &str,
     adaptive_sizing: bool,
 ) -> BacktestResult {
-    run_backtest_with_fees(grid_cfg, bars, starting_equity, _tick_size, _base_precision, adaptive_sizing, 0.001)
+    run_backtest_with_costs(grid_cfg, bars, starting_equity, _tick_size, _base_precision, adaptive_sizing, 0.001, 5.0)
 }
 
 /// Like `run_backtest` but with an explicit fee rate.
@@ -136,6 +136,24 @@ pub fn run_backtest_with_fees(
     _base_precision: &str,
     adaptive_sizing: bool,
     fee_rate: f64,
+) -> BacktestResult {
+    run_backtest_with_costs(grid_cfg, bars, starting_equity, _tick_size, _base_precision, adaptive_sizing, fee_rate, 5.0)
+}
+
+/// Full backtest with explicit fee rate and slippage.
+///
+/// `slippage_bps` is adverse slippage in basis points (e.g. 5.0 = 0.05%).
+/// Buys fill at `order_price * (1 + slippage_bps/10000)`,
+/// sells fill at `order_price * (1 - slippage_bps/10000)`.
+pub fn run_backtest_with_costs(
+    grid_cfg: &GridCfg,
+    bars: &[PriceBar],
+    starting_equity: f64,
+    _tick_size: &str,
+    _base_precision: &str,
+    adaptive_sizing: bool,
+    fee_rate: f64,
+    slippage_bps: f64,
 ) -> BacktestResult {
     let levels = compute_levels(
         grid_cfg.lower_price,
@@ -245,7 +263,13 @@ pub fn run_backtest_with_fees(
                 }
             };
             if would_fill {
-                filled_levels.push((level, order.side, order.price));
+                // Apply adverse slippage to fill price
+                let slip_mult = slippage_bps / 10_000.0;
+                let slipped_price = match order.side {
+                    Side::Buy => order.price * (1.0 + slip_mult),   // buy higher
+                    Side::Sell => order.price * (1.0 - slip_mult),  // sell lower
+                };
+                filled_levels.push((level, order.side, slipped_price));
             }
         }
 
