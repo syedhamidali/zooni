@@ -5,6 +5,7 @@ pub mod autopilot;
 pub mod backtest;
 pub mod bot;
 pub mod config;
+pub mod funding_arb;
 pub mod grid;
 pub mod indicators;
 pub mod market_hours;

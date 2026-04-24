@@ -218,6 +218,84 @@ struct OpenOrdersResult {
     list: Vec<OpenOrder>,
 }
 
+// -- Linear / Perpetual types ------------------------------------------------
+
+/// Linear perpetual ticker — includes funding rate info.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LinearTicker {
+    pub symbol: String,
+    #[serde(rename = "lastPrice")]
+    pub last_price: String,
+    #[serde(rename = "bid1Price", default)]
+    pub bid1_price: String,
+    #[serde(rename = "ask1Price", default)]
+    pub ask1_price: String,
+    #[serde(rename = "markPrice", default)]
+    pub mark_price: String,
+    #[serde(rename = "indexPrice", default)]
+    pub index_price: String,
+    #[serde(rename = "fundingRate", default)]
+    pub funding_rate: String,
+    #[serde(rename = "nextFundingTime", default)]
+    pub next_funding_time: String,
+    #[serde(rename = "volume24h", default)]
+    pub volume_24h: String,
+    #[serde(rename = "turnover24h", default)]
+    pub turnover_24h: String,
+    #[serde(rename = "openInterest", default)]
+    pub open_interest: String,
+    #[serde(rename = "price24hPcnt", default)]
+    pub price_24h_pcnt: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearTickersResult {
+    list: Vec<LinearTicker>,
+}
+
+/// Historical funding rate entry.
+#[derive(Debug, Deserialize, Clone)]
+pub struct FundingRateEntry {
+    pub symbol: String,
+    #[serde(rename = "fundingRate")]
+    pub funding_rate: String,
+    #[serde(rename = "fundingRateTimestamp")]
+    pub funding_rate_timestamp: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundingHistoryResult {
+    list: Vec<FundingRateEntry>,
+}
+
+/// Linear perpetual position.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LinearPosition {
+    pub symbol: String,
+    pub side: String,
+    pub size: String,
+    #[serde(rename = "avgPrice", default)]
+    pub avg_price: String,
+    #[serde(rename = "positionValue", default)]
+    pub position_value: String,
+    #[serde(rename = "unrealisedPnl", default)]
+    pub unrealised_pnl: String,
+    #[serde(rename = "cumRealisedPnl", default)]
+    pub cum_realised_pnl: String,
+    pub leverage: String,
+    #[serde(rename = "markPrice", default)]
+    pub mark_price: String,
+    #[serde(rename = "liqPrice", default)]
+    pub liq_price: String,
+    #[serde(rename = "positionIdx", default)]
+    pub position_idx: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinearPositionsResult {
+    list: Vec<LinearPosition>,
+}
+
 impl Client {
     pub fn new(cfg: Config) -> Self {
         let base = if cfg.testnet {
@@ -558,5 +636,255 @@ impl Client {
         // timeSecond is epoch seconds as a string
         let secs: u64 = result.time_second.parse().unwrap_or(0);
         Ok(secs * 1000) // return as millis
+    }
+
+    // -- Linear / Perpetual (category = "linear") --------------------------------
+
+    /// Instrument info for a linear perpetual contract.
+    pub async fn instrument_info_linear(&self, symbol: &str) -> Result<InstrumentInfo> {
+        let url = format!("{}/v5/market/instruments-info", self.base);
+        let res = self
+            .http
+            .get(&url)
+            .query(&[("category", "linear"), ("symbol", symbol)])
+            .send()
+            .await
+            .context("linear instruments-info request failed")?;
+        let env: Envelope<InstrumentsInfoResult> = res
+            .json()
+            .await
+            .context("linear instruments-info parse failed")?;
+        if env.ret_code != 0 {
+            return Err(anyhow!(
+                "linear instruments-info error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
+        }
+        env.result
+            .and_then(|r| r.list.into_iter().next())
+            .ok_or_else(|| anyhow!("linear instruments-info: empty result for {}", symbol))
+    }
+
+    /// Ticker for a linear perpetual — includes funding rate and next funding time.
+    pub async fn ticker_linear(&self, symbol: &str) -> Result<LinearTicker> {
+        let url = format!("{}/v5/market/tickers", self.base);
+        let res = self
+            .http
+            .get(&url)
+            .query(&[("category", "linear"), ("symbol", symbol)])
+            .send()
+            .await
+            .context("linear ticker request failed")?;
+        let env: Envelope<LinearTickersResult> =
+            res.json().await.context("linear ticker parse failed")?;
+        if env.ret_code != 0 {
+            return Err(anyhow!(
+                "linear ticker error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
+        }
+        env.result
+            .and_then(|r| r.list.into_iter().next())
+            .ok_or_else(|| anyhow!("linear ticker: empty result for {}", symbol))
+    }
+
+    /// Fetch all linear perpetual tickers (for scanning funding rates).
+    pub async fn all_tickers_linear(&self) -> Result<Vec<LinearTicker>> {
+        let url = format!("{}/v5/market/tickers", self.base);
+        let res = self
+            .http
+            .get(&url)
+            .query(&[("category", "linear")])
+            .send()
+            .await
+            .context("all linear tickers request failed")?;
+        let env: Envelope<LinearTickersResult> = res
+            .json()
+            .await
+            .context("all linear tickers parse failed")?;
+        if env.ret_code != 0 {
+            return Err(anyhow!(
+                "all linear tickers error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
+        }
+        Ok(env.result.map(|r| r.list).unwrap_or_default())
+    }
+
+    /// Historical funding rate for a perpetual symbol.
+    pub async fn funding_rate_history(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<FundingRateEntry>> {
+        let url = format!("{}/v5/market/funding/history", self.base);
+        let limit_str = limit.to_string();
+        let res = self
+            .http
+            .get(&url)
+            .query(&[
+                ("category", "linear"),
+                ("symbol", symbol),
+                ("limit", &limit_str),
+            ])
+            .send()
+            .await
+            .context("funding history request failed")?;
+        let env: Envelope<FundingHistoryResult> =
+            res.json().await.context("funding history parse failed")?;
+        if env.ret_code != 0 {
+            return Err(anyhow!(
+                "funding history error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
+        }
+        Ok(env.result.map(|r| r.list).unwrap_or_default())
+    }
+
+    /// Set leverage for a linear perpetual symbol.
+    pub async fn set_leverage(
+        &self,
+        symbol: &str,
+        buy_leverage: &str,
+        sell_leverage: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            category: &'a str,
+            symbol: &'a str,
+            #[serde(rename = "buyLeverage")]
+            buy_leverage: &'a str,
+            #[serde(rename = "sellLeverage")]
+            sell_leverage: &'a str,
+        }
+        #[derive(Deserialize)]
+        struct Resp {}
+        let _: Resp = self
+            .signed_post(
+                "/v5/position/set-leverage",
+                &Req {
+                    category: "linear",
+                    symbol,
+                    buy_leverage,
+                    sell_leverage,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Query open positions for linear perpetuals.
+    pub async fn positions_linear(&self, symbol: &str) -> Result<Vec<LinearPosition>> {
+        let r: LinearPositionsResult = self
+            .signed_get(
+                "/v5/position/list",
+                &[("category", "linear"), ("symbol", symbol)],
+            )
+            .await?;
+        Ok(r.list)
+    }
+
+    /// Place a linear perpetual order.
+    pub async fn place_linear_order(
+        &self,
+        symbol: &str,
+        side: Side,
+        order_type: &str,
+        qty: &str,
+        price: Option<&str>,
+        reduce_only: bool,
+        order_link_id: Option<&str>,
+    ) -> Result<PlaceOrderResult> {
+        let side_str = match side {
+            Side::Buy => "Buy",
+            Side::Sell => "Sell",
+        };
+        #[derive(Serialize)]
+        struct Req<'a> {
+            category: &'a str,
+            symbol: &'a str,
+            side: &'a str,
+            #[serde(rename = "orderType")]
+            order_type: &'a str,
+            qty: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            price: Option<&'a str>,
+            #[serde(rename = "timeInForce", skip_serializing_if = "Option::is_none")]
+            time_in_force: Option<&'a str>,
+            #[serde(rename = "reduceOnly")]
+            reduce_only: bool,
+            #[serde(rename = "orderLinkId", skip_serializing_if = "Option::is_none")]
+            order_link_id: Option<&'a str>,
+        }
+        self.signed_post(
+            "/v5/order/create",
+            &Req {
+                category: "linear",
+                symbol,
+                side: side_str,
+                order_type,
+                qty,
+                price,
+                time_in_force: if order_type == "Limit" {
+                    Some("GTC")
+                } else {
+                    None
+                },
+                reduce_only,
+                order_link_id,
+            },
+        )
+        .await
+    }
+
+    /// Cancel a linear perpetual order.
+    pub async fn cancel_linear_order(
+        &self,
+        symbol: &str,
+        order_id: &str,
+    ) -> Result<CancelOrderResult> {
+        let req = CancelOrderReq {
+            category: "linear",
+            symbol,
+            order_id: Some(order_id),
+            order_link_id: None,
+        };
+        self.signed_post("/v5/order/cancel", &req).await
+    }
+
+    /// Cancel all open linear orders for a symbol.
+    pub async fn cancel_all_linear(&self, symbol: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            category: &'a str,
+            symbol: &'a str,
+        }
+        #[derive(Deserialize)]
+        struct Resp {}
+        let _: Resp = self
+            .signed_post(
+                "/v5/order/cancel-all",
+                &Req {
+                    category: "linear",
+                    symbol,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Query open orders for linear perpetuals.
+    pub async fn open_orders_linear(&self, symbol: &str) -> Result<Vec<OpenOrder>> {
+        let r: OpenOrdersResult = self
+            .signed_get(
+                "/v5/order/realtime",
+                &[("category", "linear"), ("symbol", symbol)],
+            )
+            .await?;
+        Ok(r.list)
     }
 }

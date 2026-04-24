@@ -51,8 +51,16 @@ async fn main() -> Result<()> {
     }
 
     let autopilot = cfg.autopilot.enabled || args.iter().any(|a| a == "--autopilot");
+    let funding_arb = args.iter().any(|a| a == "--funding-arb");
 
-    if autopilot {
+    if funding_arb {
+        tracing::info!(
+            config = %config_path,
+            testnet = cfg.bybit.testnet,
+            dry_run = cfg.bot.dry_run,
+            "starting in FUNDING-ARB mode",
+        );
+    } else if autopilot {
         tracing::info!(
             config = %config_path,
             testnet = cfg.bybit.testnet,
@@ -74,7 +82,9 @@ async fn main() -> Result<()> {
         );
     }
 
-    if autopilot {
+    if funding_arb {
+        zooni::funding_arb::run(cfg).await
+    } else if autopilot {
         zooni::autopilot::run(cfg).await
     } else if use_tui {
         zooni::tui::run_with_tui(cfg).await

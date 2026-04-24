@@ -23,6 +23,8 @@ pub struct BotConfig {
     pub autopilot: AutoPilotConfig,
     #[serde(default)]
     pub zerodha: Option<ZerodhaCfg>,
+    #[serde(default)]
+    pub funding_arb: Option<FundingArbCfg>,
 }
 
 /// Auto-pilot mode: the bot autonomously scans, picks symbols, and manages grids.
@@ -101,6 +103,66 @@ impl ZerodhaCfg {
             }),
         }
     }
+}
+
+/// Funding rate arbitrage configuration. Optional — only for `--funding-arb` mode.
+#[derive(Debug, Deserialize, Clone)]
+pub struct FundingArbCfg {
+    /// Minimum funding rate to enter (e.g., 0.0001 = 0.01% per 8h).
+    #[serde(default = "default_entry_threshold")]
+    pub entry_threshold: f64,
+    /// Exit when funding drops below this.
+    #[serde(default = "default_exit_threshold")]
+    pub exit_threshold: f64,
+    /// Minimum 24h turnover in USDT.
+    #[serde(default = "default_arb_min_turnover")]
+    pub min_turnover: f64,
+    /// Max fraction of equity per position.
+    #[serde(default = "default_arb_max_pos_pct")]
+    pub max_position_pct: f64,
+    /// Leverage for the short perp leg.
+    #[serde(default = "default_arb_leverage")]
+    pub leverage: u32,
+    /// Max simultaneous positions.
+    #[serde(default = "default_arb_max_positions")]
+    pub max_positions: usize,
+    /// Min consecutive positive funding intervals before entry.
+    #[serde(default = "default_arb_min_positive")]
+    pub min_positive_intervals: usize,
+    /// Max unrealised loss as fraction of position before force-exit.
+    #[serde(default = "default_arb_max_loss")]
+    pub max_unrealised_loss_pct: f64,
+    /// How often to scan funding rates (seconds).
+    #[serde(default = "default_arb_scan_interval")]
+    pub scan_interval_secs: u64,
+}
+
+fn default_entry_threshold() -> f64 {
+    0.0001
+}
+fn default_exit_threshold() -> f64 {
+    -0.00005
+}
+fn default_arb_min_turnover() -> f64 {
+    5_000_000.0
+}
+fn default_arb_max_pos_pct() -> f64 {
+    0.15
+}
+fn default_arb_leverage() -> u32 {
+    1
+}
+fn default_arb_max_positions() -> usize {
+    3
+}
+fn default_arb_min_positive() -> usize {
+    3
+}
+fn default_arb_max_loss() -> f64 {
+    0.02
+}
+fn default_arb_scan_interval() -> u64 {
+    300
 }
 
 #[derive(Debug, Deserialize, Clone)]
