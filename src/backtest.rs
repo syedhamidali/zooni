@@ -207,13 +207,26 @@ pub fn run_backtest(
             }
         }
 
-        // Check which orders would have filled during this bar
+        // Simulate intra-bar price path to avoid look-ahead bias.
+        // If close > open (bullish bar): assume open → low → high → close
+        // If close <= open (bearish bar): assume open → high → low → close
+        // Fill at order price when the simulated path first crosses it.
+        let bullish = bar.close > bar.open;
         let mut filled_levels: Vec<(usize, Side, f64)> = Vec::new();
 
         for (&level, order) in orders.iter() {
-            let would_fill = match order.side {
-                Side::Buy => bar.low <= order.price,
-                Side::Sell => bar.high >= order.price,
+            let would_fill = if bullish {
+                // Path: open → low → high → close
+                match order.side {
+                    Side::Buy => bar.low <= order.price && order.price <= bar.open,
+                    Side::Sell => bar.high >= order.price && order.price >= bar.low,
+                }
+            } else {
+                // Path: open → high → low → close
+                match order.side {
+                    Side::Buy => bar.low <= order.price && order.price <= bar.high,
+                    Side::Sell => bar.high >= order.price && order.price >= bar.open,
+                }
             };
             if would_fill {
                 filled_levels.push((level, order.side, order.price));
@@ -795,15 +808,27 @@ pub fn run_orchestrator_backtest_with_data(
             kline_buf.remove(0);
         }
 
-        // Check pending orders for fills
+        // Check pending orders for fills using simulated intra-bar path
+        let bar_bullish = bar.close > bar.open;
         let mut fills_this_bar = Vec::new();
         pending_orders.retain(|order| {
             let filled = match order.order_type {
                 OrderType::Market => true,
-                OrderType::Limit => match order.side {
-                    Side::Buy => bar.low <= order.price,
-                    Side::Sell => bar.high >= order.price,
-                },
+                OrderType::Limit => {
+                    if bar_bullish {
+                        // Path: open → low → high → close
+                        match order.side {
+                            Side::Buy => bar.low <= order.price && order.price <= bar.open,
+                            Side::Sell => bar.high >= order.price && order.price >= bar.low,
+                        }
+                    } else {
+                        // Path: open → high → low → close
+                        match order.side {
+                            Side::Buy => bar.low <= order.price && order.price <= bar.high,
+                            Side::Sell => bar.high >= order.price && order.price >= bar.open,
+                        }
+                    }
+                }
             };
             if filled {
                 let fill_price = match order.order_type {
