@@ -180,10 +180,7 @@ impl TelegramBot {
                                         error!(err = %e, "failed to send /kill ack");
                                     }
                                     match &callbacks.kill_and_cancel {
-                                        Some(f) => {
-                                            let result = (f)();
-                                            result
-                                        }
+                                        Some(f) => (f)(),
                                         None => "✅ Kill complete. All orders cancelled. Bot is stopped.".to_string(),
                                     }
                                 }

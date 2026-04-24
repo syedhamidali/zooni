@@ -589,7 +589,7 @@ async fn run_inner(
 
                     // Pre-close: cancel all buy orders 15 minutes before close.
                     if let Some(mins) = market_hours::minutes_until_close(venue_id, now) {
-                        if mins <= 15 && mins >= 0 {
+                        if (0..=15).contains(&mins) {
                             info!(
                                 venue = venue_id,
                                 mins,

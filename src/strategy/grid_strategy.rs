@@ -185,7 +185,7 @@ impl Strategy for GridStrategy {
 
             // Cancel all buy orders 15 minutes before close (MIS intraday risk).
             if let Some(mins) = market_hours::minutes_until_close(venue, now) {
-                if mins <= 15 && mins >= 0 {
+                if (0..=15).contains(&mins) {
                     tracing::info!(
                         venue,
                         mins,
