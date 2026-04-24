@@ -909,4 +909,143 @@ impl Client {
             .await?;
         Ok(r.list)
     }
+
+    /// Query the current status of a single spot order by order ID.
+    /// Uses `/v5/order/realtime` with orderId filter.
+    pub async fn get_order_status(&self, symbol: &str, order_id: &str) -> Result<OrderStatusInfo> {
+        #[derive(Deserialize)]
+        struct SingleOrderResult {
+            list: Vec<SingleOrder>,
+        }
+        #[derive(Deserialize)]
+        struct SingleOrder {
+            #[serde(rename = "orderId")]
+            order_id: String,
+            #[serde(rename = "orderStatus")]
+            order_status: String,
+            #[serde(rename = "avgPrice", default)]
+            avg_price: String,
+            #[serde(rename = "cumExecQty", default)]
+            cum_exec_qty: String,
+            #[serde(rename = "updatedTime", default)]
+            updated_time: String,
+        }
+
+        let r: SingleOrderResult = self
+            .signed_get(
+                "/v5/order/realtime",
+                &[
+                    ("category", "spot"),
+                    ("symbol", symbol),
+                    ("orderId", order_id),
+                ],
+            )
+            .await?;
+
+        let o = r
+            .list
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("get_order_status: no order found for {}", order_id))?;
+
+        let exchange_status = match o.order_status.as_str() {
+            "Filled" => ExchangeOrderStatus::Filled,
+            "Cancelled" | "PartiallyFilledCanceled" => ExchangeOrderStatus::Cancelled,
+            "New" | "PartiallyFilled" => ExchangeOrderStatus::Open,
+            other => ExchangeOrderStatus::Unknown(other.to_string()),
+        };
+
+        Ok(OrderStatusInfo {
+            order_id: o.order_id,
+            status: exchange_status,
+            avg_fill_price: o.avg_price.parse().unwrap_or(0.0),
+            filled_qty: o.cum_exec_qty.parse().unwrap_or(0.0),
+            updated_time_ms: o.updated_time.parse().unwrap_or(0),
+        })
+    }
+
+    /// Fetch recent execution fills from `/v5/execution/list`.
+    /// Returns fills for `symbol` that occurred at or after `since_ms` (epoch millis).
+    pub async fn get_recent_fills(&self, symbol: &str, since_ms: u64) -> Result<Vec<Fill>> {
+        #[derive(Deserialize)]
+        struct ExecResult {
+            list: Vec<ExecEntry>,
+        }
+        #[derive(Deserialize)]
+        struct ExecEntry {
+            #[serde(rename = "orderId")]
+            order_id: String,
+            #[serde(rename = "execPrice")]
+            exec_price: String,
+            #[serde(rename = "execQty")]
+            exec_qty: String,
+            #[serde(rename = "execTime")]
+            exec_time: String,
+            side: String,
+        }
+
+        let since_str = since_ms.to_string();
+        let r: ExecResult = self
+            .signed_get(
+                "/v5/execution/list",
+                &[
+                    ("category", "spot"),
+                    ("symbol", symbol),
+                    ("startTime", since_str.as_str()),
+                ],
+            )
+            .await?;
+
+        let fills = r
+            .list
+            .into_iter()
+            .map(|e| Fill {
+                order_id: e.order_id,
+                exec_price: e.exec_price.parse().unwrap_or(0.0),
+                exec_qty: e.exec_qty.parse().unwrap_or(0.0),
+                exec_time_ms: e.exec_time.parse().unwrap_or(0),
+                side: if e.side.eq_ignore_ascii_case("buy") {
+                    crate::types::Side::Buy
+                } else {
+                    crate::types::Side::Sell
+                },
+            })
+            .collect();
+
+        Ok(fills)
+    }
+}
+
+// -- Reconciliation types ----------------------------------------------------
+
+/// Status of a single order as reported by the exchange.
+#[derive(Debug, Clone)]
+pub enum ExchangeOrderStatus {
+    Open,
+    Filled,
+    Cancelled,
+    Unknown(String),
+}
+
+/// Status info for a single order returned by `get_order_status`.
+#[derive(Debug, Clone)]
+pub struct OrderStatusInfo {
+    pub order_id: String,
+    pub status: ExchangeOrderStatus,
+    /// Average fill price (0.0 if not filled).
+    pub avg_fill_price: f64,
+    /// Cumulative filled quantity.
+    pub filled_qty: f64,
+    /// Last update timestamp in epoch millis.
+    pub updated_time_ms: u64,
+}
+
+/// A single execution fill from `/v5/execution/list`.
+#[derive(Debug, Clone)]
+pub struct Fill {
+    pub order_id: String,
+    pub exec_price: f64,
+    pub exec_qty: f64,
+    pub exec_time_ms: u64,
+    pub side: crate::types::Side,
 }

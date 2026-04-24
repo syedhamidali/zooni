@@ -317,6 +317,46 @@ impl Db {
         Ok(count)
     }
 
+    /// Return all fills whose `filled_at` timestamp falls within [start, end).
+    pub fn query_fills_in_range(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<FillRow>> {
+        let start_str = start.to_rfc3339();
+        let end_str = end.to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT order_id, symbol, side, price, qty, notional, realised_pnl, filled_at
+             FROM fills
+             WHERE filled_at >= ?1 AND filled_at < ?2
+             ORDER BY filled_at ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![start_str, end_str], |row| {
+                let side_str: String = row.get(2)?;
+                let filled_str: String = row.get(7)?;
+                Ok(FillRow {
+                    order_id: row.get(0)?,
+                    symbol: row.get(1)?,
+                    side: if side_str == "buy" {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    },
+                    price: row.get(3)?,
+                    qty: row.get(4)?,
+                    notional: row.get(5)?,
+                    realised_pnl: row.get(6)?,
+                    filled_at: DateTime::parse_from_rfc3339(&filled_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("reading fills in range")?;
+        Ok(rows)
+    }
+
     // -- Bot state ------------------------------------------------------------
 
     pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
