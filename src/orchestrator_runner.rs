@@ -54,6 +54,9 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
         info!("*** DRY-RUN MODE — no orders will be sent ***");
     }
 
+    // Wrap in Arc so extra-symbol background loops can share it without cloning.
+    let venue = Arc::new(venue);
+
     let symbol = cfg.grid.symbol.clone();
 
     // -- Persistence --
@@ -883,6 +886,8 @@ fn build_strategies(symbol: &str, cfg: &BotConfig) -> Vec<Box<dyn Strategy>> {
                     recenter_threshold_pct: 0.15,
                     vwap_entry_filter: false,
                     vwap_threshold_pct: 0.005,
+                    venue: "bybit".to_string(),
+                    respect_market_hours: false,
                 })));
                 info!(
                     lower = grid_cfg.lower_price,

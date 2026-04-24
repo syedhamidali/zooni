@@ -335,8 +335,22 @@ pub struct GridCfg {
     /// Only used when `vwap_entry_filter = true`. Default: 0.005.
     #[serde(default = "default_vwap_threshold_pct")]
     pub vwap_threshold_pct: f64,
+    /// Venue / exchange identifier used to look up the trading-hours calendar.
+    /// E.g. `"zerodha"`, `"NSE"`, `"bybit"`, `"crypto"`. Default: `"bybit"`.
+    /// The value is matched case-insensitively in `market_hours::is_market_open`.
+    #[serde(default = "default_venue")]
+    pub venue: String,
+    /// When `true`, the bot skips tick processing outside the venue's trading hours
+    /// and cancels all open buy orders 15 minutes before market close.
+    /// For 24/7 venues (Bybit, crypto) this has no observable effect.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub respect_market_hours: bool,
 }
 
+fn default_venue() -> String {
+    "bybit".to_string()
+}
 fn default_recenter_threshold() -> f64 {
     0.15
 }
@@ -396,6 +410,15 @@ pub struct BotSettings {
     /// Graceful shutdown: seconds to wait for in-flight orders.
     #[serde(default = "default_shutdown_wait")]
     pub shutdown_wait_secs: u64,
+    /// When true, query the exchange for each DB-open order on startup and reconcile
+    /// any fills or cancellations that occurred while the bot was offline.
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub reconcile_on_startup: bool,
+    /// How far back (in seconds) to look for exchange fills during startup reconciliation.
+    /// Default: 86400 (24 hours).
+    #[serde(default = "default_reconcile_lookback_secs")]
+    pub reconcile_lookback_secs: u64,
 }
 
 impl Default for BotSettings {
@@ -407,8 +430,14 @@ impl Default for BotSettings {
             circuit_breaker_threshold: default_circuit_breaker_threshold(),
             circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown(),
             shutdown_wait_secs: default_shutdown_wait(),
+            reconcile_on_startup: true,
+            reconcile_lookback_secs: default_reconcile_lookback_secs(),
         }
     }
+}
+
+fn default_reconcile_lookback_secs() -> u64 {
+    86400 // 24 hours
 }
 
 fn default_true() -> bool {
