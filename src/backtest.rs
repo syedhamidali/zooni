@@ -865,10 +865,9 @@ pub fn run_orchestrator_backtest_with_data(
         let secondary_actions = if let Some((sec_sym, sec_bars)) = &secondary_resolved {
             if bar_idx < sec_bars.len() {
                 let sec_snap = bar_to_snapshot(sec_sym, &sec_bars[bar_idx]);
-                match orchestrator.on_tick(&sec_snap, &[], current_regime) {
-                    Ok(actions) => actions,
-                    Err(_) => vec![],
-                }
+                orchestrator
+                    .on_tick(&sec_snap, &[], current_regime)
+                    .unwrap_or_default()
             } else {
                 vec![]
             }
@@ -877,9 +876,7 @@ pub fn run_orchestrator_backtest_with_data(
         };
 
         // Collect new orders from both ticks
-        let all_tagged_actions = tagged_actions
-            .into_iter()
-            .chain(secondary_actions.into_iter());
+        let all_tagged_actions = tagged_actions.into_iter().chain(secondary_actions);
         for ta in all_tagged_actions {
             if let StrategyAction::PlaceOrder {
                 side,

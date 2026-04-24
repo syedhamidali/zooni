@@ -409,18 +409,6 @@ mod tests {
         }
     }
 
-    fn snap_with_spread(price: f64, spread: f64) -> MarketSnapshot {
-        MarketSnapshot {
-            symbol: "NIFTY".to_string(),
-            bid: price - spread,
-            ask: price + spread,
-            last: price,
-            volume_24h: 100_000.0,
-        }
-    }
-
-    // Build a strategy pre-loaded with price history that will produce a bullish EMA crossover.
-    // The slow EMA lags; we start low, then ramp up so fast EMA crosses above slow.
     fn make_momentum_long_strategy() -> MomentumStrategy {
         let mut config = default_config();
         config.mode = StrategyMode::MomentumOnly;
@@ -443,31 +431,10 @@ mod tests {
         strat
     }
 
-    fn make_momentum_short_strategy() -> MomentumStrategy {
-        let mut config = default_config();
-        config.mode = StrategyMode::MomentumOnly;
-        config.ema_fast = 3;
-        config.ema_slow = 7;
-        config.rsi_period = 5;
-        config.atr_period = 3;
-        config.bb_period = 5;
-        let mut strat = MomentumStrategy::new(config);
-
-        // Flat period followed by ramp down — forces fast EMA below slow EMA
-        let prices: Vec<f64> = vec![
-            100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 99.5, 99.0, 98.5, 98.0, 97.5, 97.0,
-            96.5, 96.0, 95.5, 95.0, 94.5, 94.0, 93.5, 93.0, 92.5, 92.0, 91.5, 91.0,
-        ];
-        for &p in &prices {
-            strat.push_price(p, p + 0.5, p - 0.5);
-        }
-        strat
-    }
-
     #[test]
     fn momentum_long_signal_on_ema_crossover() {
         let strat = make_momentum_long_strategy();
-        let sig = strat.generate_signal();
+        let _sig = strat.generate_signal();
         // After ramping up from flat, fast EMA should be above slow and RSI > 50
         // Crossover may or may not have just happened; verify GoLong or None
         // We verify the signal generation path works with uptrend data
@@ -755,20 +722,8 @@ mod tests {
         }
 
         let s = snap(130.0);
-        let actions = strat.on_tick(&s, &[]).unwrap();
+        let _actions = strat.on_tick(&s, &[]).unwrap();
 
-        let new_entries: Vec<_> = actions
-            .iter()
-            .filter(|a| {
-                matches!(
-                    a,
-                    StrategyAction::PlaceOrder {
-                        order_type: OrderType::Limit,
-                        ..
-                    }
-                )
-            })
-            .collect();
         // If a take profit was hit we might get a Limit exit, but no new entry beyond max
         assert!(
             strat.positions.len() <= 1,

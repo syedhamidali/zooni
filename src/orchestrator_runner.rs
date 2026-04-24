@@ -124,16 +124,14 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
 
     // -- Private WebSocket (Bybit only — Zerodha uses its own ticker WS) --
     let (_ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    if !dry_run {
-        if venue.bybit_client().is_some() {
-            if let Ok((key, secret, _)) = bybit_creds(&cfg) {
-                let ws_testnet = cfg.bybit.testnet;
-                let ws_tx_clone = _ws_tx.clone();
-                tokio::spawn(async move {
-                    ws_private::start(key, secret, ws_testnet, ws_tx_clone).await;
-                });
-                info!("private WebSocket listener spawned (Bybit)");
-            }
+    if !dry_run && venue.bybit_client().is_some() {
+        if let Ok((key, secret, _)) = bybit_creds(&cfg) {
+            let ws_testnet = cfg.bybit.testnet;
+            let ws_tx_clone = _ws_tx.clone();
+            tokio::spawn(async move {
+                ws_private::start(key, secret, ws_testnet, ws_tx_clone).await;
+            });
+            info!("private WebSocket listener spawned (Bybit)");
         }
     }
 

@@ -63,6 +63,12 @@ struct QuoteData {
 // Client
 // ---------------------------------------------------------------------------
 
+impl Default for YahooClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl YahooClient {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
@@ -76,8 +82,8 @@ impl YahooClient {
     }
 
     async fn ensure_crumb(&mut self) -> Result<&str> {
-        if self.crumb.is_some() {
-            return Ok(self.crumb.as_ref().unwrap());
+        if let Some(ref crumb) = self.crumb {
+            return Ok(crumb);
         }
 
         self.http
