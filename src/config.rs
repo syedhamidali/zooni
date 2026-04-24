@@ -37,6 +37,8 @@ pub struct BotConfig {
     pub orchestrator: OrchestratorConfig,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    #[serde(default)]
+    pub sizing: SizingCfg,
 }
 
 impl BotConfig {
@@ -284,6 +286,28 @@ pub struct GridCfg {
     /// Trailing profit: lock in gains when grid fills accumulate beyond this threshold (USDT).
     #[serde(default)]
     pub trailing_profit_threshold: f64,
+    /// Cancel all buy orders when regime transitions from Ranging to Trending,
+    /// to prevent accumulating base asset into a directional move.
+    #[serde(default = "default_true")]
+    pub cancel_buys_on_trend: bool,
+    /// Automatically re-center the grid if price escapes the range by
+    /// `recenter_threshold_pct` beyond the upper or lower band.
+    #[serde(default)]
+    pub auto_recenter: bool,
+    /// How far outside the grid band price must move before triggering auto-recenter
+    /// (as a fraction of the band edge, e.g. 0.15 = 15%). Default: 0.15.
+    #[serde(default = "default_recenter_threshold")]
+    pub recenter_threshold_pct: f64,
+    /// Use post-only (maker) orders for limit placements to pay maker fees (0.02%)
+    /// instead of taker fees (0.1%). On PostOnly rejection, the bot adjusts price
+    /// by one tick and retries once. If still rejected, skips the level this cycle.
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub use_post_only: bool,
+}
+
+fn default_recenter_threshold() -> f64 {
+    0.15
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,6 +414,36 @@ fn default_max_consecutive_losses() -> u32 {
 }
 fn default_fee_rate() -> f64 {
     0.001
+}
+
+// ── Sizing config ────────────────────────────────────────────────────────────
+
+/// Position-sizing tuning knobs.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SizingCfg {
+    /// Fractional-Kelly multiplier applied to the raw Kelly fraction.
+    /// 0.15 (15% of full Kelly) gives ~50% of returns with far lower drawdown.
+    #[serde(default = "default_kelly_fraction")]
+    pub kelly_fraction: f64,
+    /// Minimum notional order size in quote currency. Orders below this are skipped.
+    #[serde(default = "default_min_order_notional")]
+    pub min_order_notional: f64,
+}
+
+impl Default for SizingCfg {
+    fn default() -> Self {
+        Self {
+            kelly_fraction: default_kelly_fraction(),
+            min_order_notional: default_min_order_notional(),
+        }
+    }
+}
+
+fn default_kelly_fraction() -> f64 {
+    0.15
+}
+fn default_min_order_notional() -> f64 {
+    10.0
 }
 fn default_db_path() -> String {
     "trading-bot.db".to_string()

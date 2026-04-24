@@ -591,6 +591,8 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
         num_levels,
         0.001, // 0.1% taker fee
         None,  // no historical win rate yet
+        bot_cfg.sizing.kelly_fraction,
+        bot_cfg.sizing.min_order_notional,
     );
 
     // Convert quote-per-level to base-per-level
