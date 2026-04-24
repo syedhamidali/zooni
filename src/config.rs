@@ -296,6 +296,13 @@ pub struct RiskCfg {
     pub max_drawdown: f64,
     #[serde(default = "default_max_consecutive_losses")]
     pub max_consecutive_losses: u32,
+    /// IANA timezone for daily/weekly loss reset (e.g. "Asia/Kolkata"). Default: "UTC".
+    #[serde(default = "default_loss_reset_tz")]
+    pub loss_reset_timezone: String,
+}
+
+fn default_loss_reset_tz() -> String {
+    "UTC".to_string()
 }
 
 #[derive(Debug, Deserialize)]

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{Datelike, Utc};
+use chrono_tz::Tz;
 use tokio::sync::Mutex;
 use tokio::time;
 use tracing::{error, info, warn};
@@ -100,6 +101,13 @@ async fn run_inner(
     };
     let (engine, kill) = RiskEngine::new(risk_cfg, cfg.risk.starting_equity_quote);
     let engine = Arc::new(Mutex::new(engine));
+
+    // Parse timezone for daily/weekly loss reset boundaries
+    let loss_tz: Tz = cfg
+        .risk
+        .loss_reset_timezone
+        .parse()
+        .unwrap_or(chrono_tz::UTC);
 
     // -- 4. Ctrl+C + SIGTERM → trip kill switch --------------------------------
     {
@@ -401,14 +409,14 @@ async fn run_inner(
 
     // -- 14. Feed initial PnL into risk engine --------------------------------
     {
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let now_local = Utc::now().with_timezone(&loss_tz);
+        let today = now_local.format("%Y-%m-%d").to_string();
         let daily = db.lock().await.daily_pnl(&today)?;
-        let now = Utc::now();
-        let weekday = now.weekday().num_days_from_monday();
-        let week_start = (now - chrono::Duration::days(weekday as i64))
+        let weekday = now_local.weekday().num_days_from_monday();
+        let week_start = (now_local - chrono::Duration::days(weekday as i64))
             .format("%Y-%m-%d")
             .to_string();
-        let week_end = (now + chrono::Duration::days(1))
+        let week_end = (now_local + chrono::Duration::days(1))
             .format("%Y-%m-%d")
             .to_string();
         let weekly = db.lock().await.weekly_pnl(&week_start, &week_end)?;
@@ -558,14 +566,14 @@ async fn run_inner(
                         metrics.series.lock().await.push_equity(bal);
                     }
 
-                    // Refresh daily/weekly PnL — batch db locks
-                    let today = Utc::now().format("%Y-%m-%d").to_string();
-                    let now = Utc::now();
-                    let weekday = now.weekday().num_days_from_monday();
-                    let week_start = (now - chrono::Duration::days(weekday as i64))
+                    // Refresh daily/weekly PnL — use configured timezone for boundaries
+                    let now_local = Utc::now().with_timezone(&loss_tz);
+                    let today = now_local.format("%Y-%m-%d").to_string();
+                    let weekday = now_local.weekday().num_days_from_monday();
+                    let week_start = (now_local - chrono::Duration::days(weekday as i64))
                         .format("%Y-%m-%d")
                         .to_string();
-                    let week_end = (now + chrono::Duration::days(1))
+                    let week_end = (now_local + chrono::Duration::days(1))
                         .format("%Y-%m-%d")
                         .to_string();
                     {
