@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Statistical arbitrage pairs trading strategy — market-neutral spread trading.
 //!
 //! Trades the spread between two correlated instruments (e.g., HDFCBANK vs ICICIBANK).
