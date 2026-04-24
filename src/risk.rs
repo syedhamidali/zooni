@@ -188,7 +188,10 @@ impl RiskEngine {
     /// of the loss).  The entry is timestamped to `Utc::now()`.
     pub fn record_loss(&mut self, amount: f64) {
         if amount > 0.0 {
-            self.window.borrow_mut().loss_history.push((Utc::now(), amount));
+            self.window
+                .borrow_mut()
+                .loss_history
+                .push((Utc::now(), amount));
             // Invalidate cache so the next check recomputes immediately.
             self.window.borrow_mut().last_calc = None;
         }
@@ -199,7 +202,11 @@ impl RiskEngine {
     fn rolling_daily_loss(&self) -> f64 {
         let mut w = self.window.borrow_mut();
         if w.loss_history.is_empty() {
-            return if self.daily_pnl < 0.0 { -self.daily_pnl } else { 0.0 };
+            return if self.daily_pnl < 0.0 {
+                -self.daily_pnl
+            } else {
+                0.0
+            };
         }
         w.refresh();
         w.daily_loss
@@ -210,7 +217,11 @@ impl RiskEngine {
     fn rolling_weekly_loss(&self) -> f64 {
         let mut w = self.window.borrow_mut();
         if w.loss_history.is_empty() {
-            return if self.weekly_pnl < 0.0 { -self.weekly_pnl } else { 0.0 };
+            return if self.weekly_pnl < 0.0 {
+                -self.weekly_pnl
+            } else {
+                0.0
+            };
         }
         w.refresh();
         w.weekly_loss
@@ -328,16 +339,16 @@ impl RiskEngine {
             return Err(Reject::NoEquity);
         }
 
+        // Rolling 7-day (168 h) loss limit — checked first (higher severity).
+        let weekly_loss = self.rolling_weekly_loss();
+        if weekly_loss >= self.cfg.weekly_loss_limit * self.equity {
+            return Err(Reject::WeeklyLossLimit);
+        }
+
         // Rolling 24 h loss limit.
         let daily_loss = self.rolling_daily_loss();
         if daily_loss >= self.cfg.daily_loss_limit * self.equity {
             return Err(Reject::DailyLossLimit);
-        }
-
-        // Rolling 7-day (168 h) loss limit.
-        let weekly_loss = self.rolling_weekly_loss();
-        if weekly_loss >= self.cfg.weekly_loss_limit * self.equity {
-            return Err(Reject::WeeklyLossLimit);
         }
 
         if self.peak_equity > 0.0 {

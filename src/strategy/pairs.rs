@@ -359,17 +359,30 @@ impl Strategy for PairsStrategy {
         m.insert("entry_z_score".into(), self.config.entry_z_score);
         m.insert("exit_z_score".into(), self.config.exit_z_score);
         m.insert("stop_z_score".into(), self.config.stop_z_score);
-        m.insert("position_size_quote".into(), self.config.position_size_quote);
+        m.insert(
+            "position_size_quote".into(),
+            self.config.position_size_quote,
+        );
         m.insert("min_correlation".into(), self.config.min_correlation);
         m
     }
 
     fn apply_params(&mut self, params: &HashMap<String, f64>) {
-        if let Some(&v) = params.get("entry_z_score") { self.config.entry_z_score = v; }
-        if let Some(&v) = params.get("exit_z_score") { self.config.exit_z_score = v; }
-        if let Some(&v) = params.get("stop_z_score") { self.config.stop_z_score = v; }
-        if let Some(&v) = params.get("position_size_quote") { self.config.position_size_quote = v; }
-        if let Some(&v) = params.get("min_correlation") { self.config.min_correlation = v; }
+        if let Some(&v) = params.get("entry_z_score") {
+            self.config.entry_z_score = v;
+        }
+        if let Some(&v) = params.get("exit_z_score") {
+            self.config.exit_z_score = v;
+        }
+        if let Some(&v) = params.get("stop_z_score") {
+            self.config.stop_z_score = v;
+        }
+        if let Some(&v) = params.get("position_size_quote") {
+            self.config.position_size_quote = v;
+        }
+        if let Some(&v) = params.get("min_correlation") {
+            self.config.min_correlation = v;
+        }
     }
 
     fn save_state(&self) -> Option<String> {

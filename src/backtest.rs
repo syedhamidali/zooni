@@ -178,12 +178,13 @@ pub fn run_backtest_with_costs(
     _tick_size: &str,
     _base_precision: &str,
     adaptive_sizing: bool,
-    _fee_rate: f64, // kept for API compat; internal logic uses maker/taker split
+    _fee_rate: f64,     // kept for API compat; internal logic uses maker/taker split
     _slippage_bps: f64, // kept for API compat; actual slippage is deterministic 0.05-0.15%
 ) -> BacktestResult {
     // Fee constants
     const MAKER_FEE: f64 = 0.0002; // 0.02% for limit/resting fills
-    const TAKER_FEE: f64 = 0.001;  // 0.10% for market/crossed fills
+    #[allow(dead_code)]
+    const TAKER_FEE: f64 = 0.001; // 0.10% for market/crossed fills (reserved for market-order simulation)
 
     let levels = compute_levels(
         grid_cfg.lower_price,
@@ -345,21 +346,18 @@ pub fn run_backtest_with_costs(
             if would_fill {
                 // ── ORDER REJECTION (5 %): candle_index % 20 == 0 ──────────────
                 if bar_idx % 20 == 0 {
-                    tracing::warn!(
-                        "Simulated order rejection at level {}",
-                        level
-                    );
+                    tracing::warn!("Simulated order rejection at level {}", level);
                     continue; // skip fill entirely
                 }
 
                 // ── Deterministic slippage: 0.05 % – 0.15 % ─────────────────────
                 // Formula: (price * 0.001) * ((price as u64 % 3) as f64 * 0.5 + 0.5)
                 // gives a value in [0.0005*price, 0.0015*price], i.e. 0.05–0.15%.
-                let slip_abs = (order.price * 0.001)
-                    * ((order.price as u64 % 3) as f64 * 0.5 + 0.5);
+                let slip_abs =
+                    (order.price * 0.001) * ((order.price as u64 % 3) as f64 * 0.5 + 0.5);
                 let slip_pct = slip_abs / order.price; // fraction, 0.0005..0.0015
                 let slipped_price = match order.side {
-                    Side::Buy => order.price * (1.0 + slip_pct),  // buy higher
+                    Side::Buy => order.price * (1.0 + slip_pct), // buy higher
                     Side::Sell => order.price * (1.0 - slip_pct), // sell lower
                 };
                 filled_levels.push((level, order.side, slipped_price));
@@ -369,56 +367,55 @@ pub fn run_backtest_with_costs(
         // Helper closure: process a single fill (shared by new fills and partial carry-overs)
         // Returns the realized pnl for this fill.
         // All grid fills are limit orders → maker fee.
-        let process_fill =
-            |side: Side,
-             fill_price: f64,
-             fill_qty: f64,
-             buy_fills: &mut usize,
-             sell_fills: &mut usize,
-             holdings_base: &mut f64,
-             avg_buy_price: &mut f64,
-             equity: &mut f64,
-             total_cycles: &mut usize,
-             winning_cycles: &mut usize,
-             total_pnl: &mut f64,
-             fee_rate: f64|
-             -> f64 {
-                match side {
-                    Side::Buy => {
-                        *buy_fills += 1;
-                        let notional = fill_price * fill_qty;
-                        let fee = notional * fee_rate;
-                        *holdings_base += fill_qty;
-                        if *holdings_base > 0.0 {
-                            let effective_cost = notional + fee;
-                            *avg_buy_price = ((*avg_buy_price * (*holdings_base - fill_qty))
-                                + effective_cost)
-                                / *holdings_base;
-                        }
-                        *equity -= notional + fee;
-                        0.0
+        let process_fill = |side: Side,
+                            fill_price: f64,
+                            fill_qty: f64,
+                            buy_fills: &mut usize,
+                            sell_fills: &mut usize,
+                            holdings_base: &mut f64,
+                            avg_buy_price: &mut f64,
+                            equity: &mut f64,
+                            total_cycles: &mut usize,
+                            winning_cycles: &mut usize,
+                            total_pnl: &mut f64,
+                            fee_rate: f64|
+         -> f64 {
+            match side {
+                Side::Buy => {
+                    *buy_fills += 1;
+                    let notional = fill_price * fill_qty;
+                    let fee = notional * fee_rate;
+                    *holdings_base += fill_qty;
+                    if *holdings_base > 0.0 {
+                        let effective_cost = notional + fee;
+                        *avg_buy_price = ((*avg_buy_price * (*holdings_base - fill_qty))
+                            + effective_cost)
+                            / *holdings_base;
                     }
-                    Side::Sell => {
-                        *sell_fills += 1;
-                        let notional = fill_price * fill_qty;
-                        let fee = notional * fee_rate;
-                        let gross_pnl = if *holdings_base >= fill_qty {
-                            (fill_price - *avg_buy_price) * fill_qty
-                        } else {
-                            grid_spacing * fill_qty
-                        };
-                        let cycle_pnl = gross_pnl - fee;
-                        *holdings_base = (*holdings_base - fill_qty).max(0.0);
-                        *equity += notional - fee;
-                        *total_cycles += 1;
-                        if cycle_pnl > 0.0 {
-                            *winning_cycles += 1;
-                        }
-                        *total_pnl += cycle_pnl;
-                        cycle_pnl
-                    }
+                    *equity -= notional + fee;
+                    0.0
                 }
-            };
+                Side::Sell => {
+                    *sell_fills += 1;
+                    let notional = fill_price * fill_qty;
+                    let fee = notional * fee_rate;
+                    let gross_pnl = if *holdings_base >= fill_qty {
+                        (fill_price - *avg_buy_price) * fill_qty
+                    } else {
+                        grid_spacing * fill_qty
+                    };
+                    let cycle_pnl = gross_pnl - fee;
+                    *holdings_base = (*holdings_base - fill_qty).max(0.0);
+                    *equity += notional - fee;
+                    *total_cycles += 1;
+                    if cycle_pnl > 0.0 {
+                        *winning_cycles += 1;
+                    }
+                    *total_pnl += cycle_pnl;
+                    cycle_pnl
+                }
+            }
+        };
 
         // ── Process carry-over partial fills (maker fee) ────────────────────────
         for (level, side, fill_price, fill_qty) in partial_fills_this_bar {

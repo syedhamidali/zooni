@@ -418,14 +418,17 @@ async fn run_inner(
                                 mid,
                                 vwap = vwap_val,
                                 deviation_pct = format!("{:.2}%", deviation_pct * 100.0),
-                                threshold_pct = format!("{:.2}%", cfg.grid.vwap_threshold_pct * 100.0),
+                                threshold_pct =
+                                    format!("{:.2}%", cfg.grid.vwap_threshold_pct * 100.0),
                                 "VWAP entry filter: price too far from VWAP — deferring grid placement",
                             );
                             false
                         }
                     }
                     None => {
-                        warn!("VWAP entry filter: could not compute VWAP from klines — proceeding anyway");
+                        warn!(
+                            "VWAP entry filter: could not compute VWAP from klines — proceeding anyway"
+                        );
                         true
                     }
                 }
@@ -448,36 +451,36 @@ async fn run_inner(
         if !vwap_allows_entry {
             info!("VWAP entry filter active: skipping initial grid placement this cycle");
         } else {
-        let plan = grid.plan_initial(mid);
-        info!(plan_size = plan.len(), "placing initial grid");
-        for p in &plan {
-            if kill.load(Ordering::SeqCst) {
-                break;
+            let plan = grid.plan_initial(mid);
+            info!(plan_size = plan.len(), "placing initial grid");
+            for p in &plan {
+                if kill.load(Ordering::SeqCst) {
+                    break;
+                }
+                place_with_risk(&ctx, &mut grid, p).await;
             }
-            place_with_risk(&ctx, &mut grid, p).await;
-        }
-        info!(open_count = grid.orders.len(), "initial placement complete");
+            info!(open_count = grid.orders.len(), "initial placement complete");
         }
     } else {
         // Fill gaps in the grid that aren't occupied
         if !vwap_allows_entry {
             info!("VWAP entry filter active: skipping gap-fill placement this cycle");
         } else {
-        let plan = grid.plan_initial(mid);
-        let occupied: HashSet<usize> = grid.orders.keys().copied().collect();
-        let gaps: Vec<_> = plan
-            .into_iter()
-            .filter(|p| !occupied.contains(&p.level_index))
-            .collect();
-        if !gaps.is_empty() {
-            info!(gap_count = gaps.len(), "filling gaps in restored grid");
-            for p in &gaps {
-                if kill.load(Ordering::SeqCst) {
-                    break;
+            let plan = grid.plan_initial(mid);
+            let occupied: HashSet<usize> = grid.orders.keys().copied().collect();
+            let gaps: Vec<_> = plan
+                .into_iter()
+                .filter(|p| !occupied.contains(&p.level_index))
+                .collect();
+            if !gaps.is_empty() {
+                info!(gap_count = gaps.len(), "filling gaps in restored grid");
+                for p in &gaps {
+                    if kill.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    place_with_risk(&ctx, &mut grid, p).await;
                 }
-                place_with_risk(&ctx, &mut grid, p).await;
             }
-        }
         }
     }
 

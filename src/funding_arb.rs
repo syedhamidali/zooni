@@ -240,7 +240,10 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             // Fetch recent funding history for streak/EMA calculation
             let lookback = arb_cfg.funding_lookback.max(1);
             let historical_rates = if !dry_run {
-                match client.funding_rate_history(&t.symbol, (lookback + 1) as u32).await {
+                match client
+                    .funding_rate_history(&t.symbol, (lookback + 1) as u32)
+                    .await
+                {
                     Ok(entries) => {
                         let mut rates: Vec<f64> = entries
                             .iter()
@@ -473,7 +476,15 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                             error!(symbol = %symbol, err = %e, "perp short failed — unwinding spot leg");
                             // Unwind the spot buy
                             let _ = client
-                                .place_spot_order(&symbol, Side::Sell, "Market", &qty, None, None, false)
+                                .place_spot_order(
+                                    &symbol,
+                                    Side::Sell,
+                                    "Market",
+                                    &qty,
+                                    None,
+                                    None,
+                                    false,
+                                )
                                 .await;
                             alerter
                                 .error(&format!(
@@ -573,7 +584,15 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                     // Sell spot
                     let spot_qty_str = format!("{:.6}", pos.spot_qty);
                     match client
-                        .place_spot_order(&symbol, Side::Sell, "Market", &spot_qty_str, None, None, false)
+                        .place_spot_order(
+                            &symbol,
+                            Side::Sell,
+                            "Market",
+                            &spot_qty_str,
+                            None,
+                            None,
+                            false,
+                        )
                         .await
                     {
                         Ok(r) => {
@@ -660,7 +679,16 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             let qty_str = format!("{:.6}", pos.perp_qty);
             // Cover perp
             if let Err(e) = client
-                .place_linear_order(&pos.symbol, Side::Buy, "Market", &qty_str, None, true, None, false)
+                .place_linear_order(
+                    &pos.symbol,
+                    Side::Buy,
+                    "Market",
+                    &qty_str,
+                    None,
+                    true,
+                    None,
+                    false,
+                )
                 .await
             {
                 error!(symbol = %pos.symbol, err = %e, "shutdown perp cover failed");
@@ -668,7 +696,15 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
             // Sell spot
             let spot_qty_str = format!("{:.6}", pos.spot_qty);
             if let Err(e) = client
-                .place_spot_order(&pos.symbol, Side::Sell, "Market", &spot_qty_str, None, None, false)
+                .place_spot_order(
+                    &pos.symbol,
+                    Side::Sell,
+                    "Market",
+                    &spot_qty_str,
+                    None,
+                    None,
+                    false,
+                )
                 .await
             {
                 error!(symbol = %pos.symbol, err = %e, "shutdown spot sell failed");

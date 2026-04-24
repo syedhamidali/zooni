@@ -179,8 +179,7 @@ impl RegimeDetector {
                             }
                         };
                         result.grid_suitable = is_ranging
-                            || (matches!(result.regime, Regime::TrendingUp)
-                                && result.adx < 30.0);
+                            || (matches!(result.regime, Regime::TrendingUp) && result.adx < 30.0);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "ML regime inference failed — using ADX fallback");
@@ -431,7 +430,10 @@ mod tests {
         let (raw, _) = classify(19.0, 50.0, 0.03, 1.5);
         // Hysteresis applies: if last was Ranging and adx <= 22, stay Ranging
         let stays_ranging = raw == Regime::Ranging || 19.0 <= 22.0;
-        assert!(stays_ranging, "hysteresis should keep regime as Ranging below ADX 22");
+        assert!(
+            stays_ranging,
+            "hysteresis should keep regime as Ranging below ADX 22"
+        );
     }
 
     #[test]

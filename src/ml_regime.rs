@@ -68,12 +68,9 @@ impl MlRegimeClassifier {
             returns_std_20d,
         ];
 
-        let input: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (1, N_FEATURES),
-            features,
-        )
-        .context("building input array")?
-        .into();
+        let input: Tensor = tract_ndarray::Array2::from_shape_vec((1, N_FEATURES), features)
+            .context("building input array")?
+            .into();
 
         let outputs = self
             .plan

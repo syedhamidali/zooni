@@ -49,10 +49,10 @@ pub fn kelly_fraction(win_rate: f64, avg_win: f64, avg_loss: f64) -> f64 {
 /// we never oversize in unfavourable market conditions.
 pub fn regime_max_fraction(regime: Regime) -> f64 {
     match regime {
-        Regime::Volatile => 0.05,      // 5%  — stay mostly out of chaotic markets
-        Regime::TrendingDown => 0.08,  // 8%  — don't catch falling knives
-        Regime::TrendingUp => 0.15,    // 15% — can work but carry risk
-        Regime::Ranging => 0.20,       // 20% — ideal grid conditions
+        Regime::Volatile => 0.05,     // 5%  — stay mostly out of chaotic markets
+        Regime::TrendingDown => 0.08, // 8%  — don't catch falling knives
+        Regime::TrendingUp => 0.15,   // 15% — can work but carry risk
+        Regime::Ranging => 0.20,      // 20% — ideal grid conditions
     }
 }
 
@@ -97,10 +97,10 @@ pub fn recommend(
 ) -> SizingRecommendation {
     // Base allocation: what fraction of equity to put into this grid
     let mut base_fraction = match analysis.regime {
-        Regime::Ranging => 0.30,       // ideal conditions
-        Regime::TrendingUp => 0.15,    // can work but risky
-        Regime::TrendingDown => 0.10,  // dangerous, minimal
-        Regime::Volatile => 0.05,      // stay mostly out
+        Regime::Ranging => 0.30,      // ideal conditions
+        Regime::TrendingUp => 0.15,   // can work but risky
+        Regime::TrendingDown => 0.10, // dangerous, minimal
+        Regime::Volatile => 0.05,     // stay mostly out
     };
 
     // Scale by confidence
@@ -339,8 +339,9 @@ mod tests {
     #[test]
     fn min_notional_filter_returns_zero() {
         // Very small equity → allocation < $10 → skipped
+        // equity=40, Ranging cap=20% → total_allocation=8.0 < min_notional=10.0
         let analysis = make_analysis(Regime::Ranging, 1.0, 1.0);
-        let rec = recommend(50.0, &analysis, 1.0, 10, 0.001, None, 0.15, 10.0);
+        let rec = recommend(40.0, &analysis, 1.0, 10, 0.001, None, 0.15, 10.0);
         assert_eq!(rec.qty_per_level, 0.0, "Dust order should be skipped");
         assert_eq!(rec.total_allocation, 0.0);
     }
@@ -363,14 +364,8 @@ mod tests {
         // At 0.15x multiplier → frac_kelly = 0.03
         // Blended: regime_base * 0.6 + 0.03 * 0.4, capped by regime cap
         let analysis = make_analysis(Regime::Ranging, 1.0, 1.0);
-        let rec_015 = recommend(
-            10_000.0, &analysis, 1.0, 10, 0.001,
-            Some(0.6), 0.15, 10.0,
-        );
-        let rec_050 = recommend(
-            10_000.0, &analysis, 1.0, 10, 0.001,
-            Some(0.6), 0.50, 10.0,
-        );
+        let rec_015 = recommend(10_000.0, &analysis, 1.0, 10, 0.001, Some(0.6), 0.15, 10.0);
+        let rec_050 = recommend(10_000.0, &analysis, 1.0, 10, 0.001, Some(0.6), 0.50, 10.0);
         assert!(
             rec_015.equity_fraction <= rec_050.equity_fraction,
             "0.15x Kelly should produce smaller or equal fraction than 0.50x"

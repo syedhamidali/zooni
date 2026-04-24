@@ -149,7 +149,7 @@ pub fn trend_is_positive(rates: &[f64]) -> bool {
 
 /// Calculate net annualised yield before entry.
 ///
-/// ```
+/// ```text
 /// net_yield = funding_rate_8h * 3 * 365 * 100   (annualised %)
 ///           - borrow_cost_annual_pct
 ///           - 2 * taker_fee_pct
@@ -341,8 +341,11 @@ pub fn evaluate_positions_with_fee(
         for candidate in entry_candidates.into_iter().take(remaining_slots) {
             let qty = position_size(equity, config, candidate.mark_price);
             if qty > 0.0 {
-                let calc_net_yield =
-                    net_yield(candidate.ema_funding_rate, config.borrow_cost_annual_pct, taker_fee);
+                let calc_net_yield = net_yield(
+                    candidate.ema_funding_rate,
+                    config.borrow_cost_annual_pct,
+                    taker_fee,
+                );
                 info!(
                     symbol = %candidate.symbol,
                     raw_rate = format!("{:.4}%", candidate.funding_rate * 100.0),
@@ -541,6 +544,8 @@ mod tests {
             min_turnover: 1_000_000.0,
             min_positive_intervals: 3,
             max_positions: 2,
+            // Disable trend filter: make_candidate uses identical rates so trend_positive=false
+            require_positive_trend: false,
             ..default_cfg()
         };
         let candidates = vec![

@@ -454,11 +454,7 @@ impl Client {
 
         let env: Envelope<T> = res.json().await.context("signed POST parse failed")?;
         if env.ret_code != 0 {
-            return Err(anyhow!(
-                "bybit error {}: {}",
-                env.ret_code,
-                env.ret_msg
-            ));
+            return Err(anyhow!("bybit error {}: {}", env.ret_code, env.ret_msg));
         }
         env.result
             .ok_or_else(|| anyhow!("bybit: empty result for {}", path))

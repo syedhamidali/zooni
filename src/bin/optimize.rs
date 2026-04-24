@@ -15,7 +15,7 @@ use chrono::Utc;
 use serde::Serialize;
 
 use zooni::backtest::{
-    fetch_klines_public, generate_synthetic_data, parse_csv, run_backtest, PriceBar,
+    PriceBar, fetch_klines_public, generate_synthetic_data, parse_csv, run_backtest,
 };
 use zooni::config::{BotConfig, GridCfg};
 
@@ -123,8 +123,8 @@ fn main() -> Result<()> {
             })
             .collect()
     } else if let Some(path) = data_path {
-        let csv = std::fs::read_to_string(path)
-            .with_context(|| format!("reading data file {path}"))?;
+        let csv =
+            std::fs::read_to_string(path).with_context(|| format!("reading data file {path}"))?;
         parse_csv(&csv)
     } else if let Some(count) = synthetic_bars {
         let mid = (cfg.grid.lower_price + cfg.grid.upper_price) / 2.0;
@@ -138,7 +138,10 @@ fn main() -> Result<()> {
     };
 
     if bars.len() < 50 {
-        anyhow::bail!("Need at least 50 price bars for optimization; got {}", bars.len());
+        anyhow::bail!(
+            "Need at least 50 price bars for optimization; got {}",
+            bars.len()
+        );
     }
 
     println!("Loaded {} price bars for {symbol}", bars.len());
@@ -203,10 +206,22 @@ fn main() -> Result<()> {
                 vwap_threshold_pct: 0.005,
             };
 
-            let train_result =
-                run_backtest(&grid_cfg, train_bars, starting_equity, "0.01", "0.000001", false);
-            let test_result =
-                run_backtest(&grid_cfg, test_bars, starting_equity, "0.01", "0.000001", false);
+            let train_result = run_backtest(
+                &grid_cfg,
+                train_bars,
+                starting_equity,
+                "0.01",
+                "0.000001",
+                false,
+            );
+            let test_result = run_backtest(
+                &grid_cfg,
+                test_bars,
+                starting_equity,
+                "0.01",
+                "0.000001",
+                false,
+            );
 
             candidates.push(Candidate {
                 levels,
@@ -274,8 +289,8 @@ fn main() -> Result<()> {
         test_sharpe: best.test_sharpe,
     };
 
-    let json = serde_json::to_string_pretty(&optimal)
-        .context("serializing optimal params to JSON")?;
+    let json =
+        serde_json::to_string_pretty(&optimal).context("serializing optimal params to JSON")?;
     std::fs::write(out_path, &json)
         .with_context(|| format!("writing optimal params to {out_path}"))?;
 

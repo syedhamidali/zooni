@@ -616,7 +616,10 @@ pub fn load_optimal_params(path: &str) -> Option<OptimalParams> {
         },
         Err(_) => {
             // File simply not present — this is the normal state before the first optimizer run.
-            tracing::debug!(path, "optimal_params.json not found — using config defaults");
+            tracing::debug!(
+                path,
+                "optimal_params.json not found — using config defaults"
+            );
             None
         }
     }

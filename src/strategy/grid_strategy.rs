@@ -117,8 +117,7 @@ impl GridStrategy {
         // Detect transition from Ranging to a trending regime
         if self.cancel_buys_on_trend {
             let was_ranging = matches!(prev, Some(Regime::Ranging));
-            let now_trending =
-                matches!(regime, Regime::TrendingUp | Regime::TrendingDown);
+            let now_trending = matches!(regime, Regime::TrendingUp | Regime::TrendingDown);
             if was_ranging && now_trending {
                 tracing::info!(
                     "Trend breakout detected, cancelling buy orders to prevent accumulating into trend"
