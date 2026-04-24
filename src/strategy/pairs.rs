@@ -442,6 +442,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn make_strategy_with_prices(prices_a: &[f64], prices_b: &[f64]) -> PairsStrategy {
         let mut config = default_config();
         config.lookback = prices_a.len().max(prices_b.len());
