@@ -80,6 +80,14 @@ pub trait Strategy: Send {
 
     /// Apply parameter adjustments. Keys must match those from `tunable_params`.
     fn apply_params(&mut self, _params: &HashMap<String, f64>) {}
+
+    /// Serialize internal state for persistence. Returns JSON string or None if not supported.
+    fn save_state(&self) -> Option<String> {
+        None
+    }
+
+    /// Restore internal state from a previously saved JSON string.
+    fn load_state(&mut self, _json: &str) {}
 }
 
 /// A fill event reported to the strategy.

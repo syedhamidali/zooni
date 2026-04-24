@@ -7,9 +7,22 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use super::{FillEvent, MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::types::Side;
+
+/// Serializable snapshot of DCA state for persistence across restarts.
+#[derive(Serialize, Deserialize)]
+pub struct DcaSnapshot {
+    pub tick_count: u64,
+    pub total_bought: f64,
+    pub total_spent: f64,
+    pub price_history: Vec<f64>,
+    pub buys_skipped: u64,
+    pub peak_since_entry: f64,
+    pub cycles_completed: u64,
+}
 
 pub struct DcaStrategy {
     symbol: String,
@@ -112,6 +125,30 @@ impl DcaStrategy {
         self.total_spent = 0.0;
         self.peak_since_entry = 0.0;
         self.cycles_completed += 1;
+    }
+
+    /// Serialize key state for persistence.
+    pub fn snapshot(&self) -> DcaSnapshot {
+        DcaSnapshot {
+            tick_count: self.tick_count,
+            total_bought: self.total_bought,
+            total_spent: self.total_spent,
+            price_history: self.price_history.clone(),
+            buys_skipped: self.buys_skipped,
+            peak_since_entry: self.peak_since_entry,
+            cycles_completed: self.cycles_completed,
+        }
+    }
+
+    /// Restore state from a snapshot.
+    pub fn restore(&mut self, snap: &DcaSnapshot) {
+        self.tick_count = snap.tick_count;
+        self.total_bought = snap.total_bought;
+        self.total_spent = snap.total_spent;
+        self.price_history = snap.price_history.clone();
+        self.buys_skipped = snap.buys_skipped;
+        self.peak_since_entry = snap.peak_since_entry;
+        self.cycles_completed = snap.cycles_completed;
     }
 }
 
@@ -257,6 +294,16 @@ impl Strategy for DcaStrategy {
         }
         if let Some(&v) = params.get("interval_ticks") {
             self.interval_ticks = (v as u64).clamp(1, 100);
+        }
+    }
+
+    fn save_state(&self) -> Option<String> {
+        serde_json::to_string(&self.snapshot()).ok()
+    }
+
+    fn load_state(&mut self, json: &str) {
+        if let Ok(snap) = serde_json::from_str::<DcaSnapshot>(json) {
+            self.restore(&snap);
         }
     }
 }

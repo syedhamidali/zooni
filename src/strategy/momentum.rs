@@ -7,10 +7,23 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use super::{FillEvent, MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::indicators;
 use crate::types::Side;
+
+/// Serializable snapshot of momentum strategy state.
+#[derive(Serialize, Deserialize)]
+pub struct MomentumSnapshot {
+    pub price_history: Vec<f64>,
+    pub high_history: Vec<f64>,
+    pub low_history: Vec<f64>,
+    pub ticks_since_trade: u64,
+    pub confirmed_momentum: bool,
+    pub regime_confirmation_bars: u32,
+    pub pending_regime: bool,
+}
 
 const MAX_HISTORY: usize = 200;
 
@@ -109,6 +122,28 @@ impl MomentumStrategy {
             regime_confirmation_bars: 0,
             pending_regime: initial_momentum,
         }
+    }
+
+    pub fn snapshot(&self) -> MomentumSnapshot {
+        MomentumSnapshot {
+            price_history: self.price_history.clone(),
+            high_history: self.high_history.clone(),
+            low_history: self.low_history.clone(),
+            ticks_since_trade: self.ticks_since_trade,
+            confirmed_momentum: self.confirmed_momentum,
+            regime_confirmation_bars: self.regime_confirmation_bars,
+            pending_regime: self.pending_regime,
+        }
+    }
+
+    pub fn restore(&mut self, snap: &MomentumSnapshot) {
+        self.price_history = snap.price_history.clone();
+        self.high_history = snap.high_history.clone();
+        self.low_history = snap.low_history.clone();
+        self.ticks_since_trade = snap.ticks_since_trade;
+        self.confirmed_momentum = snap.confirmed_momentum;
+        self.regime_confirmation_bars = snap.regime_confirmation_bars;
+        self.pending_regime = snap.pending_regime;
     }
 
     fn push_price(&mut self, close: f64, high: f64, low: f64) {
@@ -415,6 +450,16 @@ impl Strategy for MomentumStrategy {
         }
         if let Some(&v) = params.get("position_size_quote") {
             self.config.position_size_quote = v.clamp(10.0, 100_000.0);
+        }
+    }
+
+    fn save_state(&self) -> Option<String> {
+        serde_json::to_string(&self.snapshot()).ok()
+    }
+
+    fn load_state(&mut self, json: &str) {
+        if let Ok(snap) = serde_json::from_str::<MomentumSnapshot>(json) {
+            self.restore(&snap);
         }
     }
 }
