@@ -128,6 +128,39 @@ Funding rate arbitrage settings. Optional — run with `--funding-arb` flag.
 | `max_unrealised_loss_pct` | f64 | `0.02` | Force-exit if unrealised loss exceeds 2% |
 | `scan_interval_secs` | u64 | `300` | Seconds between rate scans (5 minutes) |
 
+## `[tax]`
+
+Tax-aware profitability engine. Optional — defaults to `jurisdiction = "none"` (no tax checks).
+
+Set `jurisdiction = "india"` for Indian market trading so the bot only enters trades that are profitable after all deductions.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `jurisdiction` | string | `"none"` | `"india"` or `"none"` |
+| `crypto_tax_rate` | f64 | `0.30` | Flat tax on crypto gains (30% in India) |
+| `crypto_tds_rate` | f64 | `0.01` | TDS on every crypto sale (1% in India) |
+| `equity_stcg_rate` | f64 | `0.15` | Short-term capital gains on equity (15%) |
+| `equity_ltcg_rate` | f64 | `0.10` | Long-term capital gains on equity (10%) |
+| `trading_fee_rate` | f64 | `0.001` | Brokerage + exchange fees per leg |
+
+### Break-even Thresholds (India defaults)
+
+| Asset Class | Min Profit to Break Even |
+|-------------|--------------------------|
+| Indian crypto | ~1.76% (30% tax + 1% TDS + fees) |
+| Indian equity | ~0.24% (15% STCG + fees) |
+| International crypto | ~0.20% (fees only) |
+
+## `[slippage]`
+
+Slippage protection. Optional — sensible defaults applied automatically.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_slippage_pct` | f64 | `0.005` | Reject fills with > 0.5% slippage |
+| `prefer_limit_orders` | bool | `true` | Convert market orders to aggressive limits |
+| `limit_offset_pct` | f64 | `0.001` | Aggressive limit offset from current price (0.1%) |
+
 ## Validation Rules
 
 - `grid.levels` must be >= 2 (unless autopilot is enabled)

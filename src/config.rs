@@ -9,6 +9,8 @@ use std::path::Path;
 
 use crate::alerts::AlertConfig;
 use crate::scanner::ScannerConfig;
+use crate::slippage::SlippageConfig;
+use crate::tax::TaxConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct BotConfig {
@@ -25,6 +27,10 @@ pub struct BotConfig {
     pub zerodha: Option<ZerodhaCfg>,
     #[serde(default)]
     pub funding_arb: Option<FundingArbCfg>,
+    #[serde(default)]
+    pub tax: TaxConfig,
+    #[serde(default)]
+    pub slippage: SlippageConfig,
 }
 
 /// Auto-pilot mode: the bot autonomously scans, picks symbols, and manages grids.

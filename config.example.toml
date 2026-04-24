@@ -108,3 +108,25 @@ kline_count         = 200         # candles to fetch for regime analysis
 # min_positive_intervals   = 3         # min consecutive positive funding periods
 # max_unrealised_loss_pct  = 0.02      # force-exit if unrealised loss > 2%
 # scan_interval_secs       = 300       # check rates every 5 minutes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tax-aware profitability (optional — defaults to no tax for international)
+# For Indian market trading, set jurisdiction = "india" so the bot only enters
+# trades that are profitable AFTER 30% crypto tax + 1% TDS + fees.
+# ─────────────────────────────────────────────────────────────────────────────
+# [tax]
+# jurisdiction       = "none"    # "india" or "none"
+# crypto_tax_rate    = 0.30      # 30% flat tax on crypto gains (India)
+# crypto_tds_rate    = 0.01      # 1% TDS on every crypto sale (India)
+# equity_stcg_rate   = 0.15      # 15% short-term capital gains (equity, India)
+# equity_ltcg_rate   = 0.10      # 10% long-term capital gains (equity, India)
+# trading_fee_rate   = 0.001     # brokerage + exchange fees per leg
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Slippage protection (optional — sensible defaults applied)
+# Guards against adverse fills during volatile moments.
+# ─────────────────────────────────────────────────────────────────────────────
+# [slippage]
+# max_slippage_pct     = 0.005   # reject fills with > 0.5% slippage
+# prefer_limit_orders  = true    # convert market orders to aggressive limits
+# limit_offset_pct     = 0.001   # aggressive limit offset (0.1% from current)

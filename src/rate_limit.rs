@@ -34,6 +34,27 @@ impl RateLimiter {
         }
     }
 
+    /// Bybit default: 600 orders per 5 seconds.
+    pub fn bybit_default() -> Self {
+        Self::new(600, 5)
+    }
+
+    /// SEBI-compliant: 10 orders per second. Staying under this threshold avoids
+    /// the requirement for formal exchange approval of each algorithm.
+    pub fn sebi_compliant() -> Self {
+        Self::new(10, 1)
+    }
+
+    /// Zerodha general API: ~10 requests per second.
+    pub fn zerodha_default() -> Self {
+        Self::new(10, 1)
+    }
+
+    /// Zerodha historical data: 1 request per second.
+    pub fn zerodha_historical() -> Self {
+        Self::new(1, 1)
+    }
+
     /// Try to acquire a token. Returns Ok(()) if allowed, or the Duration to wait.
     pub fn try_acquire(&self) -> Result<(), Duration> {
         let mut b = self.inner.lock().unwrap();
@@ -96,5 +117,27 @@ mod tests {
         assert_eq!(rl.available_tokens(), 10);
         rl.try_acquire().unwrap();
         assert_eq!(rl.available_tokens(), 9);
+    }
+
+    #[test]
+    fn sebi_compliant_limits_to_10_ops() {
+        let rl = RateLimiter::sebi_compliant();
+        for _ in 0..10 {
+            assert!(rl.try_acquire().is_ok());
+        }
+        assert!(rl.try_acquire().is_err());
+    }
+
+    #[test]
+    fn bybit_default_has_600_capacity() {
+        let rl = RateLimiter::bybit_default();
+        assert_eq!(rl.available_tokens(), 600);
+    }
+
+    #[test]
+    fn zerodha_historical_limits_to_1_rps() {
+        let rl = RateLimiter::zerodha_historical();
+        assert!(rl.try_acquire().is_ok());
+        assert!(rl.try_acquire().is_err());
     }
 }

@@ -4,6 +4,7 @@
 
 pub mod dca;
 pub mod funding_arb;
+pub mod momentum;
 
 use anyhow::Result;
 
