@@ -7,20 +7,33 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
-Autonomous algorithmic trading bot for cryptocurrency markets. Zooni runs grid trading strategies on Bybit, with built-in market intelligence to pick symbols, size positions, and switch between opportunities automatically.
+Autonomous algorithmic trading bot for crypto and Indian equity markets. Multi-strategy orchestrator with adaptive capital allocation, running on Bybit (crypto) and Zerodha Kite Connect (NSE/BSE/F&O/MCX).
 
 ## Features
 
+### Trading
+- **Multi-Strategy Orchestrator** — runs DCA, Momentum, Grid, and Pairs strategies simultaneously with adaptive capital allocation via multi-armed bandit (softmax over EMA-smoothed risk-adjusted returns)
 - **Grid Trading** — layered limit orders across a price range, capturing profit from volatility
+- **Pairs / Statistical Arbitrage** — market-neutral spread trading on correlated pairs (e.g., HDFC/ICICI, ETH/BTC)
+- **Funding Rate Arbitrage** — delta-neutral carry trade: long spot + short perpetual, collect funding (Bybit)
 - **Auto-Pilot Mode** — scans markets, picks the best symbol, deploys grids, and switches when better opportunities appear
-- **Market Intelligence** — RSI, ADX, ATR, Bollinger Bands, SMA, EMA, VWAP for regime detection
-- **Risk Engine** — per-symbol, per-strategy, and portfolio-wide exposure limits with daily/weekly loss caps and max drawdown
+
+### Intelligence
+- **Market Regime Detection** — RSI, ADX, ATR, Bollinger Bands, SMA, EMA, VWAP classify Ranging/Trending/Volatile
+- **Equity Curve Risk Guard** — auto-disables strategies exceeding drawdown threshold, re-enables after cooldown
 - **Smart Sizing** — Kelly criterion blended with regime-adjusted scaling
+- **Tax-Aware Profitability** — India 30% crypto tax + 1% TDS, equity STCG/LTCG factored into entry decisions
+- **Slippage Protection** — reject adverse fills, convert market orders to aggressive limits
+
+### Infrastructure
+- **Multi-Venue** — Bybit (crypto spot/perps) and Zerodha Kite Connect (Indian equity/F&O/MCX) via unified venue abstraction
+- **Yahoo Finance** — free historical data for backtesting and regime detection (no paid API needed)
+- **Risk Engine** — per-symbol, per-strategy, and portfolio-wide exposure limits with daily/weekly loss caps and max drawdown
 - **Web Dashboard** — real-time charts, grid visualization, and P&L at `http://localhost:9090`
 - **TUI Dashboard** — terminal-based live view with `--tui`
-- **Telegram Bot** — remote `/status`, `/pnl`, `/pause`, `/resume` commands
+- **Telegram Bot** — remote `/status`, `/pnl`, `/alloc`, `/regime`, `/pause`, `/resume` + proactive alerts (regime changes, strategy disables, P&L thresholds)
 - **Webhook Alerts** — Slack, Discord, or any HTTP POST endpoint
-- **Backtesting** — run strategies against historical or synthetic data with optimizer sweep
+- **Backtesting** — grid, orchestrator, walk-forward analysis, optimizer sweep, CSV export
 - **Circuit Breaker** — pauses API calls after consecutive failures, auto-resets after cooldown
 - **Rate Limiting** — token bucket to stay within exchange API limits
 
@@ -29,7 +42,7 @@ Autonomous algorithmic trading bot for cryptocurrency markets. Zooni runs grid t
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) 1.85+ (edition 2024)
-- A Bybit account (testnet recommended for initial setup)
+- A Bybit account (testnet recommended) **or** a Zerodha Kite Connect account
 
 ### Build
 
@@ -46,44 +59,81 @@ cp config.example.toml config.toml
 
 > **Never commit `config.toml`** — it contains secrets. It is already in `.gitignore`.
 
-### Run
+### Run (Bybit — crypto)
 
 ```bash
-# Standard mode — trade a single configured symbol
+# Grid bot — trade a single configured symbol
 ./target/release/zooni config.toml
+
+# Multi-strategy orchestrator — DCA + Momentum + adaptive allocation
+./target/release/zooni config.toml --orchestrator
+
+# Funding rate arbitrage — delta-neutral carry trade
+./target/release/zooni config.toml --funding-arb
+
+# Auto-pilot — fully autonomous symbol selection
+./target/release/zooni config.toml --autopilot
 
 # Dry-run mode — simulate without hitting the exchange
 ./target/release/zooni config.toml --dry-run
 
 # TUI dashboard — live terminal view
 ./target/release/zooni config.toml --tui
+```
 
-# Auto-pilot — fully autonomous
-./target/release/zooni config.toml --autopilot
+### Run (Zerodha — Indian equities)
 
-# Check version
-./target/release/zooni --version
+```bash
+# Daily login (run each morning — token valid until ~06:00 IST next day)
+./target/release/zooni-kite-login config.toml
+
+# Run orchestrator on NSE equities
+./target/release/zooni config.toml --venue zerodha --orchestrator
+
+# Dry-run first to verify
+./target/release/zooni config.toml --venue zerodha --dry-run
 ```
 
 ## Binaries
 
 | Binary | Description |
 |--------|-------------|
-| `zooni` | Main bot — grid trading, autopilot, dashboard, Telegram |
-| `zooni-backtest` | Backtest grid strategies against CSV or synthetic data |
+| `zooni` | Main bot — grid, orchestrator, autopilot, funding-arb, TUI, Telegram |
+| `zooni-backtest` | Backtest strategies against CSV, synthetic, or Yahoo Finance data |
 | `zooni-scan` | One-shot market scanner — rank symbols by grid suitability |
+| `zooni-kite-login` | Zerodha Kite Connect daily login helper (OAuth token exchange) |
 
 ### Backtester
 
 ```bash
-cargo run --release --bin zooni-backtest -- config.toml --data prices.csv
-cargo run --release --bin zooni-backtest -- config.toml --optimize --data prices.csv
+# From CSV data
+zooni-backtest config.toml --data prices.csv
+
+# Synthetic data
+zooni-backtest config.toml --synthetic 5000
+
+# Yahoo Finance — Indian equities (free, no API key needed)
+zooni-backtest config.toml --yahoo RELIANCE.NS --orchestrator
+zooni-backtest config.toml --yahoo HDFCBANK.NS --yahoo-range 1y --orchestrator
+zooni-backtest config.toml --yahoo TCS.NS --yahoo-interval 1h --yahoo-range 1mo
+
+# Pairs backtest with real data
+zooni-backtest config.toml --orchestrator --pairs-data ETHUSDT,BTCUSDT
+
+# Walk-forward analysis
+zooni-backtest config.toml --walk-forward --synthetic 5000
+
+# Optimizer sweep
+zooni-backtest config.toml --optimize --data prices.csv
+
+# Export results to CSV
+zooni-backtest config.toml --yahoo INFY.NS --orchestrator --export results.csv
 ```
 
 ### Scanner
 
 ```bash
-cargo run --release --bin zooni-scan -- --config config.toml --top 10
+zooni-scan --config config.toml --top 10
 ```
 
 ## How Grid Trading Works
@@ -102,21 +152,33 @@ See [`config.example.toml`](config.example.toml) for the full reference with inl
 | Section | Purpose |
 |---------|---------|
 | `[bot]` | Dry-run, database path, retry/circuit-breaker settings |
-| `[bybit]` | Exchange API credentials and endpoint settings |
+| `[bybit]` | Bybit API credentials and endpoint settings |
+| `[zerodha]` | Zerodha Kite Connect credentials, exchange, product |
 | `[grid]` | Grid strategy parameters (symbol, range, levels, qty) |
 | `[risk]` | Exposure limits, loss caps, drawdown thresholds |
+| `[orchestrator]` | Multi-strategy settings, per-strategy config, risk guard |
 | `[alerts]` | Webhook URL and notification filters |
+| `[telegram]` | Telegram bot token, chat ID, poll interval |
 | `[autopilot]` | Autonomous mode settings |
 | `[autopilot.scanner]` | Market scanner tuning |
+| `[funding_arb]` | Funding rate arbitrage thresholds and limits |
+| `[tax]` | Tax-aware profitability (India crypto/equity rates) |
+| `[slippage]` | Slippage protection and limit order conversion |
 
 ### Telegram
 
-```bash
-export TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
-export TELEGRAM_CHAT_ID="987654321"
+Configure in `config.toml` or via environment variables:
+
+```toml
+[telegram]
+bot_token  = "123456:ABC-DEF..."
+chat_id    = "987654321"
+poll_secs  = 5
 ```
 
-Commands: `/status`, `/pnl`, `/grid`, `/pause`, `/resume`, `/fills`
+Commands: `/status`, `/pnl`, `/alloc`, `/regime`, `/pause`, `/resume`, `/help`
+
+Proactive alerts are sent automatically for regime changes, strategy disables, significant rebalances, and P&L threshold crossings.
 
 ## Dashboard
 
@@ -162,7 +224,7 @@ sqlite3 zooni.db "SELECT date(filled_at) as day, SUM(realised_pnl) as pnl, COUNT
 ## Testing
 
 ```bash
-cargo test --all           # 80+ unit & integration tests
+cargo test --all           # 300+ unit & integration tests
 cargo clippy --all-targets # lint
 cargo fmt --all -- --check # format check
 cargo bench                # criterion benchmarks
@@ -194,9 +256,10 @@ zooni 2026.4.23 (29db06d)
 
 | Venue | Status | Notes |
 |-------|--------|-------|
-| Bybit | Active | Spot V5 API, testnet supported |
+| Bybit | Active | Spot + linear perps, V5 API, testnet supported |
+| Zerodha | Active | NSE/BSE/NFO/MCX via Kite Connect v3 (Personal plan — free) |
+| Yahoo Finance | Active | Free historical data for backtesting and regime detection |
 | Hyperliquid | Planned | Skeleton implemented |
-| Zerodha | Planned | Indian equities via Kite Connect v3 |
 | Interactive Brokers | Planned | US equities via TWS/IB Gateway |
 
 ## Contributing

@@ -4,6 +4,8 @@
 //! Auto-switches between momentum (trending) and mean-reversion (ranging) modes
 //! using ADX-based regime detection. Uses ATR-based stops for adaptive risk control.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 
 use super::{FillEvent, MarketSnapshot, OrderType, Strategy, StrategyAction};
@@ -269,6 +271,10 @@ impl Strategy for MomentumStrategy {
         snapshot: &MarketSnapshot,
         fills: &[FillEvent],
     ) -> Result<Vec<StrategyAction>> {
+        if snapshot.symbol != self.config.symbol {
+            return Ok(vec![StrategyAction::None]);
+        }
+
         // Track fills — update position order_ids if needed
         for f in fills {
             for pos in &mut self.positions {
@@ -353,6 +359,25 @@ impl Strategy for MomentumStrategy {
         Ok(vec![StrategyAction::CancelAll {
             symbol: self.config.symbol.clone(),
         }])
+    }
+
+    fn tunable_params(&self) -> HashMap<String, f64> {
+        HashMap::from([
+            ("cooldown_ticks".into(), self.config.cooldown_ticks as f64),
+            (
+                "position_size_quote".into(),
+                self.config.position_size_quote,
+            ),
+        ])
+    }
+
+    fn apply_params(&mut self, params: &HashMap<String, f64>) {
+        if let Some(&v) = params.get("cooldown_ticks") {
+            self.config.cooldown_ticks = (v as u64).clamp(1, 50);
+        }
+        if let Some(&v) = params.get("position_size_quote") {
+            self.config.position_size_quote = v.clamp(10.0, 100_000.0);
+        }
     }
 }
 

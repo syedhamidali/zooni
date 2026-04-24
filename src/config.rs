@@ -8,9 +8,11 @@ use serde::Deserialize;
 use std::path::Path;
 
 use crate::alerts::AlertConfig;
+use crate::orchestrator::OrchestratorConfig;
 use crate::scanner::ScannerConfig;
 use crate::slippage::SlippageConfig;
 use crate::tax::TaxConfig;
+use crate::telegram::TelegramConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct BotConfig {
@@ -31,6 +33,54 @@ pub struct BotConfig {
     pub tax: TaxConfig,
     #[serde(default)]
     pub slippage: SlippageConfig,
+    #[serde(default)]
+    pub orchestrator: OrchestratorConfig,
+    #[serde(default)]
+    pub telegram: TelegramConfig,
+}
+
+impl BotConfig {
+    /// Build a `Venue` from this config.
+    /// When `[zerodha]` is present and `venue_override` is "zerodha", use Zerodha;
+    /// otherwise default to Bybit.
+    pub fn build_venue(&self, venue_override: Option<&str>) -> crate::venue::Venue {
+        let use_zerodha = venue_override
+            .map(|v| v.eq_ignore_ascii_case("zerodha") || v.eq_ignore_ascii_case("kite"))
+            .unwrap_or(false);
+
+        if use_zerodha {
+            let zcfg = self
+                .zerodha
+                .clone()
+                .expect("[zerodha] config section required when --venue zerodha");
+            let kite_cfg = zcfg.into_venue_config();
+            let exchange = zcfg_exchange(&self.zerodha);
+            let product = zcfg_product(&self.zerodha);
+            crate::venue::Venue::new_zerodha(kite_cfg, exchange, product)
+        } else {
+            let bybit_cfg = crate::venues::bybit::Config {
+                testnet: self.bybit.testnet,
+                credentials: Some(crate::venues::bybit::Credentials {
+                    api_key: self.bybit.api_key.clone(),
+                    api_secret: self.bybit.api_secret.clone(),
+                }),
+                recv_window_ms: self.bybit.recv_window_ms,
+            };
+            crate::venue::Venue::new_bybit(bybit_cfg, self.bybit.account_type.clone())
+        }
+    }
+}
+
+fn zcfg_exchange(z: &Option<ZerodhaCfg>) -> String {
+    z.as_ref()
+        .and_then(|c| c.exchange.clone())
+        .unwrap_or_else(|| "NSE".to_string())
+}
+
+fn zcfg_product(z: &Option<ZerodhaCfg>) -> String {
+    z.as_ref()
+        .and_then(|c| c.product.clone())
+        .unwrap_or_else(|| "CNC".to_string())
 }
 
 /// Auto-pilot mode: the bot autonomously scans, picks symbols, and manages grids.
@@ -97,17 +147,48 @@ pub struct ZerodhaCfg {
     /// Access token from the daily login flow. Can also be set at runtime.
     #[serde(default)]
     pub access_token: Option<String>,
+    /// Path to a file containing the access token (written by `zooni-kite-login`).
+    /// If set and the file exists, overrides `access_token`.
+    #[serde(default)]
+    pub access_token_file: Option<String>,
+    /// Exchange code: NSE, BSE, NFO, MCX, etc. Default: NSE.
+    #[serde(default)]
+    pub exchange: Option<String>,
+    /// Product code: CNC (delivery), MIS (intraday), NRML (F&O carry). Default: CNC.
+    #[serde(default)]
+    pub product: Option<String>,
 }
 
 impl ZerodhaCfg {
     pub fn into_venue_config(self) -> crate::venues::zerodha::Config {
+        let mut token = self.access_token;
+        if let Some(ref path) = self.access_token_file {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                let trimmed = contents.trim().to_string();
+                if !trimmed.is_empty() {
+                    token = Some(trimmed);
+                }
+            }
+        }
         crate::venues::zerodha::Config {
             credentials: Some(crate::venues::zerodha::Credentials {
                 api_key: self.api_key,
                 api_secret: self.api_secret,
-                access_token: self.access_token,
+                access_token: token,
             }),
         }
+    }
+
+    pub fn resolved_access_token(&self) -> Option<String> {
+        if let Some(ref path) = self.access_token_file {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                let trimmed = contents.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+        self.access_token.clone()
     }
 }
 

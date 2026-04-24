@@ -4,10 +4,18 @@
 //! Simulates fills when price crosses grid levels, tracks P&L, and reports stats.
 
 use std::collections::HashMap;
+use std::io::Write;
+
+use anyhow::Context;
 
 use crate::config::GridCfg;
 use crate::grid::compute_levels;
+use crate::orchestrator::{Orchestrator, OrchestratorConfig};
+use crate::pnl::PnlTracker;
+use crate::regime;
+use crate::strategy::{MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::types::Side;
+use crate::venue::VenueKline as Kline;
 
 /// One candle / tick of price data.
 #[derive(Debug, Clone)]
@@ -437,6 +445,181 @@ pub fn generate_synthetic_data(
     result
 }
 
+/// Fetch kline (candlestick) data from Bybit's public API without authentication.
+/// Useful for backtesting with real historical data.
+///
+/// `symbol`: e.g. "BTCUSDT", "ETHUSDT"
+/// `interval`: "1" (1m), "5", "15", "30", "60", "240", "D", "W"
+/// `limit`: total number of bars to fetch; transparently paginates when > 1000.
+pub async fn fetch_klines_public(
+    symbol: &str,
+    interval: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<PriceBar>> {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(rename = "retCode")]
+        ret_code: i64,
+        #[serde(rename = "retMsg")]
+        ret_msg: String,
+        result: Option<KlineResult>,
+    }
+    #[derive(Deserialize)]
+    struct KlineResult {
+        list: Vec<Vec<String>>,
+    }
+
+    let http = reqwest::Client::new();
+    let base = "https://api.bybit.com";
+    let max_per_page: usize = 1000;
+
+    let mut all_bars: Vec<PriceBar> = Vec::with_capacity(limit);
+    let mut remaining = limit;
+    let mut end_ts: Option<u64> = None;
+
+    while remaining > 0 {
+        let page_limit = remaining.min(max_per_page);
+        let limit_str = page_limit.to_string();
+        let url = format!("{base}/v5/market/kline");
+
+        let mut query: Vec<(&str, String)> = vec![
+            ("category", "spot".to_string()),
+            ("symbol", symbol.to_string()),
+            ("interval", interval.to_string()),
+            ("limit", limit_str),
+        ];
+        if let Some(end) = end_ts {
+            query.push(("end", end.to_string()));
+        }
+
+        let res = http
+            .get(&url)
+            .query(&query)
+            .send()
+            .await
+            .context("public klines request failed")?;
+
+        let env: Envelope = res
+            .json()
+            .await
+            .context("public klines JSON parse failed")?;
+
+        if env.ret_code != 0 {
+            return Err(anyhow::anyhow!(
+                "public klines error {}: {}",
+                env.ret_code,
+                env.ret_msg
+            ));
+        }
+
+        let raw = env.result.map(|r| r.list).unwrap_or_default();
+
+        if raw.is_empty() {
+            break; // no more data available
+        }
+
+        // Bybit returns newest first; parse and collect
+        let mut page_bars: Vec<PriceBar> = raw
+            .into_iter()
+            .filter_map(|row| {
+                if row.len() < 6 {
+                    return None;
+                }
+                Some(PriceBar {
+                    timestamp: row[0].parse().unwrap_or(0),
+                    open: row[1].parse().unwrap_or(0.0),
+                    high: row[2].parse().unwrap_or(0.0),
+                    low: row[3].parse().unwrap_or(0.0),
+                    close: row[4].parse().unwrap_or(0.0),
+                    volume: row[5].parse().unwrap_or(0.0),
+                })
+            })
+            .collect();
+
+        // Find earliest timestamp for pagination (newest-first, so last element is oldest)
+        let earliest = page_bars.last().map(|b| b.timestamp as u64).unwrap_or(0);
+
+        // If we got fewer than requested, there's no more data
+        let got = page_bars.len();
+        all_bars.append(&mut page_bars);
+
+        if got < page_limit {
+            break;
+        }
+
+        remaining = remaining.saturating_sub(got);
+        if remaining > 0 {
+            // Set end to one millisecond before the earliest timestamp to avoid overlap
+            end_ts = Some(earliest.saturating_sub(1));
+        }
+    }
+
+    // all_bars is in newest-first order from each page concatenated; reverse to chronological
+    all_bars.reverse();
+
+    // Deduplicate by timestamp (page boundaries may overlap by 1)
+    all_bars.dedup_by_key(|b| b.timestamp);
+
+    // Trim to requested limit
+    if all_bars.len() > limit {
+        let start = all_bars.len() - limit;
+        all_bars = all_bars.split_off(start);
+    }
+
+    Ok(all_bars)
+}
+
+/// Generate a correlated price series from a primary series.
+/// `correlation` controls how tightly the two move together (0.0–1.0).
+/// `scale` adjusts the price level relative to the primary.
+pub fn generate_correlated_data(
+    primary: &[PriceBar],
+    correlation: f64,
+    scale: f64,
+    seed: u64,
+) -> Vec<PriceBar> {
+    let mut result = Vec::with_capacity(primary.len());
+    let mut rng_state = seed;
+    let corr = correlation.clamp(0.0, 1.0);
+    let indep = (1.0 - corr * corr).sqrt();
+
+    let mut price = primary[0].close * scale;
+
+    for (i, bar) in primary.iter().enumerate() {
+        rng_state = rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let uniform = (rng_state >> 33) as f64 / (1u64 << 31) as f64;
+        let noise = (uniform - 0.5) * 2.0;
+
+        let primary_ret = if i > 0 {
+            (bar.close - primary[i - 1].close) / primary[i - 1].close
+        } else {
+            0.0
+        };
+
+        let correlated_ret = corr * primary_ret + indep * noise * 0.015;
+        let open = price;
+        let close = (price * (1.0 + correlated_ret)).max(0.01);
+        let spread = (close - open).abs();
+        let high = open.max(close) + spread * 0.3;
+        let low = (open.min(close) - spread * 0.3).max(0.01);
+
+        result.push(PriceBar {
+            timestamp: bar.timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume: bar.volume * 0.8,
+        });
+        price = close;
+    }
+    result
+}
+
 /// Optimize grid parameters by testing multiple configurations.
 pub fn optimize_grid(
     bars: &[PriceBar],
@@ -483,6 +666,544 @@ pub fn optimize_grid(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     results
+}
+
+/// Result of an orchestrator backtest.
+#[derive(Debug, Clone)]
+pub struct OrchestratorBacktestResult {
+    pub total_pnl: f64,
+    pub total_fills: usize,
+    pub bars_processed: usize,
+    pub max_drawdown: f64,
+    pub sharpe_ratio: f64,
+    pub final_equity: f64,
+    pub peak_equity: f64,
+    pub per_strategy: Vec<StrategyBacktestResult>,
+    pub allocation_history: Vec<(usize, HashMap<String, f64>)>,
+    pub equity_curve: Vec<(usize, f64)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategyBacktestResult {
+    pub name: String,
+    pub pnl: f64,
+    pub fills: usize,
+    pub win_rate: f64,
+    pub final_allocation: f64,
+}
+
+/// Simulated pending order for the orchestrator backtest.
+#[derive(Debug, Clone)]
+struct PendingOrder {
+    strategy: String,
+    side: Side,
+    price: f64,
+    qty: f64,
+    order_type: OrderType,
+    bar_placed: usize,
+}
+
+/// Run a multi-strategy orchestrator backtest on historical data.
+pub fn run_orchestrator_backtest(
+    strategies: Vec<Box<dyn Strategy>>,
+    orch_config: OrchestratorConfig,
+    bars: &[PriceBar],
+    starting_equity: f64,
+) -> OrchestratorBacktestResult {
+    run_orchestrator_backtest_with_data(strategies, orch_config, bars, None, starting_equity)
+}
+
+/// Run a multi-strategy orchestrator backtest with optional real secondary-symbol data.
+/// When `secondary` is `Some((symbol, bars))`, those bars feed the pairs strategy
+/// instead of synthetic correlated data.
+pub fn run_orchestrator_backtest_with_data(
+    strategies: Vec<Box<dyn Strategy>>,
+    orch_config: OrchestratorConfig,
+    bars: &[PriceBar],
+    secondary: Option<(&str, &[PriceBar])>,
+    starting_equity: f64,
+) -> OrchestratorBacktestResult {
+    let empty = OrchestratorBacktestResult {
+        total_pnl: 0.0,
+        total_fills: 0,
+        bars_processed: 0,
+        max_drawdown: 0.0,
+        sharpe_ratio: 0.0,
+        final_equity: starting_equity,
+        peak_equity: starting_equity,
+        per_strategy: Vec::new(),
+        allocation_history: Vec::new(),
+        equity_curve: Vec::new(),
+    };
+
+    if bars.is_empty() || strategies.is_empty() {
+        return empty;
+    }
+
+    let strategy_names: Vec<String> = strategies.iter().map(|s| s.name().to_string()).collect();
+
+    // Extract pairs config before moving orch_config into Orchestrator
+    let has_pairs = orch_config.strategies.contains(&"pairs".to_string());
+    let pairs_sym_a = orch_config.pairs.symbol_a.clone();
+    let pairs_sym_b = orch_config.pairs.symbol_b.clone();
+
+    let mut orchestrator = Orchestrator::new(strategies, orch_config);
+    let mut pnl_tracker = PnlTracker::new();
+    let mut pending_orders: Vec<PendingOrder> = Vec::new();
+    let mut equity = starting_equity;
+    let mut peak_equity = starting_equity;
+    let mut max_drawdown: f64 = 0.0;
+    let mut total_fills: usize = 0;
+    let mut daily_returns: Vec<f64> = Vec::new();
+    let mut prev_equity = equity;
+    let mut equity_curve: Vec<(usize, f64)> = Vec::new();
+    let mut allocation_history: Vec<(usize, HashMap<String, f64>)> = Vec::new();
+
+    let sym = "BTCUSDT";
+    // Use provided secondary data, or fall back to synthetic correlated data for pairs
+    let owned_secondary: Vec<PriceBar>;
+    let secondary_resolved: Option<(&str, &[PriceBar])> =
+        if let Some((sec_sym, sec_bars)) = secondary {
+            Some((sec_sym, sec_bars))
+        } else if has_pairs {
+            owned_secondary = generate_correlated_data(bars, 0.85, 0.05, 137);
+            Some((pairs_sym_a.as_str(), &owned_secondary))
+        } else {
+            None
+        };
+
+    // Build kline history for regime detection
+    let mut kline_buf: Vec<Kline> = Vec::new();
+
+    // Start
+    let initial_snap = bar_to_snapshot(sym, &bars[0]);
+    let _ = orchestrator.on_start(&initial_snap);
+
+    for (bar_idx, bar) in bars.iter().enumerate() {
+        let snapshot = bar_to_snapshot(sym, bar);
+
+        // Build kline history
+        kline_buf.push(Kline {
+            timestamp: bar.timestamp as u64,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+            volume: bar.volume,
+        });
+        if kline_buf.len() > 200 {
+            kline_buf.remove(0);
+        }
+
+        // Check pending orders for fills
+        let mut fills_this_bar = Vec::new();
+        pending_orders.retain(|order| {
+            let filled = match order.order_type {
+                OrderType::Market => true,
+                OrderType::Limit => match order.side {
+                    Side::Buy => bar.low <= order.price,
+                    Side::Sell => bar.high >= order.price,
+                },
+            };
+            if filled {
+                let fill_price = match order.order_type {
+                    OrderType::Market => bar.close,
+                    OrderType::Limit => order.price,
+                };
+                fills_this_bar.push((order.strategy.clone(), order.side, fill_price, order.qty));
+                false
+            } else {
+                bar_idx - order.bar_placed < 50 // expire stale orders after 50 bars
+            }
+        });
+
+        // Process fills
+        let mut fill_events = Vec::new();
+        for (strat, side, price, qty) in &fills_this_bar {
+            let pnl = pnl_tracker.record_fill(strat, *side, *price, *qty);
+            orchestrator.record_fill(strat, pnl);
+            total_fills += 1;
+
+            match side {
+                Side::Buy => equity -= price * qty,
+                Side::Sell => equity += price * qty,
+            }
+
+            fill_events.push(crate::strategy::FillEvent {
+                order_id: format!("bt-{}-{}", bar_idx, total_fills),
+                symbol: sym.to_string(),
+                side: *side,
+                price: *price,
+                qty: *qty,
+            });
+        }
+
+        // Regime detection every 60 bars
+        let current_regime = if bar_idx % 60 == 0 && kline_buf.len() >= 50 {
+            regime::analyze(&kline_buf).map(|a| a.regime)
+        } else {
+            orchestrator.current_regime()
+        };
+
+        // Tick orchestrator — primary symbol (symbol_b for pairs, main for others)
+        let primary_snap = if has_pairs && pairs_sym_b == sym {
+            snapshot.clone()
+        } else if has_pairs {
+            let mut s = snapshot.clone();
+            s.symbol = pairs_sym_b.clone();
+            s
+        } else {
+            snapshot.clone()
+        };
+        let tagged_actions = match orchestrator.on_tick(&primary_snap, &fill_events, current_regime)
+        {
+            Ok(actions) => actions,
+            Err(_) => continue,
+        };
+
+        // Tick with secondary symbol for pairs strategy
+        let secondary_actions = if let Some((sec_sym, sec_bars)) = &secondary_resolved {
+            if bar_idx < sec_bars.len() {
+                let sec_snap = bar_to_snapshot(sec_sym, &sec_bars[bar_idx]);
+                match orchestrator.on_tick(&sec_snap, &[], current_regime) {
+                    Ok(actions) => actions,
+                    Err(_) => vec![],
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        // Collect new orders from both ticks
+        let all_tagged_actions = tagged_actions
+            .into_iter()
+            .chain(secondary_actions.into_iter());
+        for ta in all_tagged_actions {
+            if let StrategyAction::PlaceOrder {
+                side,
+                price,
+                qty,
+                order_type,
+                ..
+            } = &ta.action
+            {
+                if *qty > 1e-12 {
+                    pending_orders.push(PendingOrder {
+                        strategy: ta.strategy_name.clone(),
+                        side: *side,
+                        price: *price,
+                        qty: *qty,
+                        order_type: *order_type,
+                        bar_placed: bar_idx,
+                    });
+                }
+            }
+        }
+
+        // Mark-to-market equity
+        let holdings_value = pnl_tracker.total_unrealised_pnl(bar.close);
+        let mtm_equity = equity
+            + holdings_value
+            + strategy_names
+                .iter()
+                .map(|n| pnl_tracker.holdings(n) * bar.close)
+                .sum::<f64>();
+
+        if mtm_equity > peak_equity {
+            peak_equity = mtm_equity;
+        }
+        let dd = if peak_equity > 0.0 {
+            (peak_equity - mtm_equity) / peak_equity
+        } else {
+            0.0
+        };
+        if dd > max_drawdown {
+            max_drawdown = dd;
+        }
+
+        // Periodic snapshots
+        if bar_idx % 24 == 0 || bar_idx == bars.len() - 1 {
+            let ret = if prev_equity > 0.0 {
+                (mtm_equity - prev_equity) / prev_equity
+            } else {
+                0.0
+            };
+            daily_returns.push(ret);
+            prev_equity = mtm_equity;
+            equity_curve.push((bar_idx, mtm_equity));
+        }
+        if bar_idx % 100 == 0 {
+            allocation_history.push((bar_idx, orchestrator.allocations()));
+        }
+    }
+
+    // Sharpe ratio
+    let sharpe_ratio = if daily_returns.len() > 1 {
+        let n = daily_returns.len() as f64;
+        let mean = daily_returns.iter().sum::<f64>() / n;
+        let variance = daily_returns
+            .iter()
+            .map(|r| (r - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        let std_dev = variance.sqrt();
+        if std_dev > 0.0 {
+            (mean / std_dev) * (252.0_f64).sqrt()
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // Per-strategy results
+    let final_allocs = orchestrator.allocations();
+    let per_strategy = strategy_names
+        .iter()
+        .map(|name| {
+            let perf = orchestrator.performance(name);
+            StrategyBacktestResult {
+                name: name.clone(),
+                pnl: pnl_tracker.realised_pnl(name),
+                fills: perf.map(|p| p.trades as usize).unwrap_or(0),
+                win_rate: pnl_tracker.win_rate(name),
+                final_allocation: *final_allocs.get(name).unwrap_or(&0.0),
+            }
+        })
+        .collect();
+
+    let _ = orchestrator.on_shutdown();
+
+    OrchestratorBacktestResult {
+        total_pnl: pnl_tracker.total_realised_pnl(),
+        total_fills,
+        bars_processed: bars.len(),
+        max_drawdown,
+        sharpe_ratio,
+        final_equity: equity,
+        peak_equity,
+        per_strategy,
+        allocation_history,
+        equity_curve,
+    }
+}
+
+/// Result from one walk-forward window.
+#[derive(Debug, Clone)]
+pub struct WalkForwardWindow {
+    pub window_idx: usize,
+    pub train_bars: usize,
+    pub test_bars: usize,
+    pub train_result: OrchestratorBacktestResult,
+    pub test_result: OrchestratorBacktestResult,
+}
+
+/// Aggregated walk-forward results.
+#[derive(Debug, Clone)]
+pub struct WalkForwardResult {
+    pub windows: Vec<WalkForwardWindow>,
+    pub total_test_pnl: f64,
+    pub total_test_fills: usize,
+    pub avg_test_sharpe: f64,
+    pub avg_test_drawdown: f64,
+    pub avg_test_win_rate: f64,
+}
+
+/// Walk-forward backtest: slide a window over the data, train on the first portion
+/// and validate on the rest. This detects overfitting and gives realistic performance
+/// estimates. `strategy_builder` is called for each window to create fresh strategies.
+pub fn run_walk_forward<F>(
+    strategy_builder: F,
+    orch_config: &OrchestratorConfig,
+    bars: &[PriceBar],
+    starting_equity: f64,
+    window_size: usize,
+    train_pct: f64,
+) -> WalkForwardResult
+where
+    F: Fn() -> Vec<Box<dyn Strategy>>,
+{
+    let mut windows = Vec::new();
+    let step = window_size / 2; // 50% overlap between windows
+    let train_size = (window_size as f64 * train_pct) as usize;
+
+    let mut idx = 0;
+    let mut window_idx = 0;
+
+    while idx + window_size <= bars.len() {
+        let window = &bars[idx..idx + window_size];
+        let train_bars = &window[..train_size];
+        let test_bars = &window[train_size..];
+
+        let train_result = run_orchestrator_backtest(
+            strategy_builder(),
+            orch_config.clone(),
+            train_bars,
+            starting_equity,
+        );
+
+        let test_result = run_orchestrator_backtest(
+            strategy_builder(),
+            orch_config.clone(),
+            test_bars,
+            starting_equity,
+        );
+
+        windows.push(WalkForwardWindow {
+            window_idx,
+            train_bars: train_bars.len(),
+            test_bars: test_bars.len(),
+            train_result,
+            test_result,
+        });
+
+        idx += step;
+        window_idx += 1;
+    }
+
+    let n = windows.len().max(1) as f64;
+    let total_test_pnl: f64 = windows.iter().map(|w| w.test_result.total_pnl).sum();
+    let total_test_fills: usize = windows.iter().map(|w| w.test_result.total_fills).sum();
+    let avg_test_sharpe = windows
+        .iter()
+        .map(|w| w.test_result.sharpe_ratio)
+        .sum::<f64>()
+        / n;
+    let avg_test_drawdown = windows
+        .iter()
+        .map(|w| w.test_result.max_drawdown)
+        .sum::<f64>()
+        / n;
+
+    let avg_test_win_rate = if !windows.is_empty() {
+        let total_wins: f64 = windows
+            .iter()
+            .flat_map(|w| &w.test_result.per_strategy)
+            .map(|s| s.win_rate * s.fills as f64)
+            .sum();
+        let total_trades: f64 = windows
+            .iter()
+            .flat_map(|w| &w.test_result.per_strategy)
+            .map(|s| s.fills as f64)
+            .sum();
+        if total_trades > 0.0 {
+            total_wins / total_trades
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    WalkForwardResult {
+        windows,
+        total_test_pnl,
+        total_test_fills,
+        avg_test_sharpe,
+        avg_test_drawdown,
+        avg_test_win_rate,
+    }
+}
+
+fn bar_to_snapshot(symbol: &str, bar: &PriceBar) -> MarketSnapshot {
+    MarketSnapshot {
+        symbol: symbol.to_string(),
+        bid: bar.close - (bar.high - bar.low) * 0.01,
+        ask: bar.close + (bar.high - bar.low) * 0.01,
+        last: bar.close,
+        volume_24h: bar.volume,
+    }
+}
+
+/// Export orchestrator backtest results to a CSV file.
+///
+/// Columns: `bar`, `equity`, then one `<name>_alloc` column per strategy.
+/// Allocation values are interpolated using last-known values from the
+/// (typically every-100-bar) allocation history.
+pub fn export_orchestrator_csv(
+    result: &OrchestratorBacktestResult,
+    path: &str,
+) -> anyhow::Result<()> {
+    let mut file =
+        std::fs::File::create(path).with_context(|| format!("creating export file {path}"))?;
+
+    // Collect strategy names from per_strategy results
+    let strat_names: Vec<&str> = result
+        .per_strategy
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+
+    // Write header
+    write!(file, "bar,equity")?;
+    for name in &strat_names {
+        write!(file, ",{}_alloc", name)?;
+    }
+    writeln!(file)?;
+
+    // Build a sorted copy of allocation history for lookup
+    let alloc_hist: &[(usize, HashMap<String, f64>)] = &result.allocation_history;
+
+    for &(bar, equity) in &result.equity_curve {
+        write!(file, "{},{:.2}", bar, equity)?;
+
+        // Find the most recent allocation snapshot at or before this bar
+        let snapshot = alloc_hist
+            .iter()
+            .rev()
+            .find(|(b, _)| *b <= bar)
+            .map(|(_, allocs)| allocs);
+
+        for name in &strat_names {
+            let alloc = snapshot.and_then(|a| a.get(*name)).copied().unwrap_or(0.0);
+            write!(file, ",{:.3}", alloc)?;
+        }
+        writeln!(file)?;
+    }
+
+    Ok(())
+}
+
+/// Export grid backtest results to CSV files.
+///
+/// Writes an equity-curve CSV to `path` with columns `bar,equity`, and a
+/// fills CSV to a sibling file with `_fills` inserted before the extension
+/// (e.g. `results.csv` -> `results_fills.csv`) with columns
+/// `timestamp,side,level,price,qty,pnl`.
+pub fn export_grid_csv(result: &BacktestResult, path: &str) -> anyhow::Result<()> {
+    // --- equity curve ---
+    let mut file =
+        std::fs::File::create(path).with_context(|| format!("creating export file {path}"))?;
+    writeln!(file, "bar,equity")?;
+    for &(ts, equity) in &result.equity_curve {
+        writeln!(file, "{},{:.2}", ts, equity)?;
+    }
+
+    // --- fills ---
+    let fills_path = if let Some(dot) = path.rfind('.') {
+        format!("{}_fills{}", &path[..dot], &path[dot..])
+    } else {
+        format!("{}_fills", path)
+    };
+
+    let mut fills_file = std::fs::File::create(&fills_path)
+        .with_context(|| format!("creating fills file {fills_path}"))?;
+    writeln!(fills_file, "timestamp,side,level,price,qty,pnl")?;
+    for f in &result.fills {
+        let side_str = match f.side {
+            Side::Buy => "BUY",
+            Side::Sell => "SELL",
+        };
+        writeln!(
+            fills_file,
+            "{},{},{},{:.2},{:.6},{:.4}",
+            f.timestamp, side_str, f.level, f.price, f.qty, f.pnl,
+        )?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -544,5 +1265,83 @@ mod tests {
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", true);
         assert!(result.bars_processed == 500);
+    }
+
+    // -- Orchestrator backtest tests --
+
+    fn make_test_strategies() -> Vec<Box<dyn Strategy>> {
+        use crate::strategy::dca::DcaStrategy;
+        use crate::strategy::momentum::{MomentumConfig, MomentumStrategy};
+
+        vec![
+            Box::new(DcaStrategy::with_sma_filter("BTCUSDT".into(), 100.0, 5, 20)),
+            Box::new(MomentumStrategy::new(MomentumConfig {
+                symbol: "BTCUSDT".into(),
+                ..MomentumConfig::default()
+            })),
+        ]
+    }
+
+    #[test]
+    fn orchestrator_backtest_runs() {
+        let bars = generate_synthetic_data(65000.0, 500, 0.02, 42);
+        let result = run_orchestrator_backtest(
+            make_test_strategies(),
+            OrchestratorConfig::default(),
+            &bars,
+            10000.0,
+        );
+        assert_eq!(result.bars_processed, 500);
+        assert_eq!(result.per_strategy.len(), 2);
+    }
+
+    #[test]
+    fn orchestrator_backtest_tracks_allocations() {
+        let bars = generate_synthetic_data(65000.0, 500, 0.02, 77);
+        let result = run_orchestrator_backtest(
+            make_test_strategies(),
+            OrchestratorConfig::default(),
+            &bars,
+            10000.0,
+        );
+        assert!(
+            !result.allocation_history.is_empty(),
+            "should track allocation snapshots"
+        );
+        assert!(!result.equity_curve.is_empty(), "should track equity curve");
+    }
+
+    #[test]
+    fn orchestrator_backtest_empty_bars() {
+        let result = run_orchestrator_backtest(
+            make_test_strategies(),
+            OrchestratorConfig::default(),
+            &[],
+            10000.0,
+        );
+        assert_eq!(result.bars_processed, 0);
+        assert!((result.final_equity - 10000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn orchestrator_backtest_per_strategy_results() {
+        let bars = generate_synthetic_data(65000.0, 300, 0.02, 123);
+        let result = run_orchestrator_backtest(
+            make_test_strategies(),
+            OrchestratorConfig {
+                rebalance_interval: 50,
+                strategy_max_drawdown: 100.0, // disable risk guard for this test
+                ..Default::default()
+            },
+            &bars,
+            10000.0,
+        );
+        for sr in &result.per_strategy {
+            assert!(
+                sr.final_allocation > 0.0,
+                "{} should have non-zero allocation",
+                sr.name
+            );
+        }
     }
 }

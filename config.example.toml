@@ -25,11 +25,19 @@ account_type   = "UNIFIED"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Zerodha Kite Connect (optional — for Indian equity, F&O, MCX)
+# Use the free "Personal" app type — historical data comes from Yahoo Finance.
+#
+# Run with:         zooni config.toml --venue zerodha
+# Daily login:      zooni-kite-login config.toml
+# Backtest (free):  zooni-backtest config.toml --yahoo RELIANCE.NS --orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 # [zerodha]
-# api_key      = "YOUR_KITE_API_KEY"
-# api_secret   = "YOUR_KITE_API_SECRET"
-# access_token = ""  # refreshed daily via login flow; can be set at runtime
+# api_key            = "YOUR_KITE_API_KEY"
+# api_secret         = "YOUR_KITE_API_SECRET"
+# access_token       = ""                    # refreshed daily via login flow
+# access_token_file  = "config.toml.kite_token"  # written by zooni-kite-login
+# exchange           = "NSE"                 # NSE, BSE, NFO, MCX, CDS
+# product            = "CNC"                 # CNC (delivery), MIS (intraday), NRML (F&O)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid strategy
@@ -61,6 +69,16 @@ max_per_strategy      = 0.15
 daily_loss_limit      = 0.05      # 5% daily loss → pause
 weekly_loss_limit     = 0.10      # 10% weekly loss → pause
 max_drawdown          = 0.15      # 15% drawdown from peak → pause
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram bot (optional — omit section to disable)
+# Remote control and monitoring via Telegram. Commands: /status /pnl /alloc
+# /regime /pause /resume /help
+# ─────────────────────────────────────────────────────────────────────────────
+# [telegram]
+# bot_token  = "123456:ABC-DEF..."   # from @BotFather
+# chat_id    = "987654321"           # your chat/group ID
+# poll_secs  = 5                     # how often to check for commands
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Alerts (optional — omit section to disable)
@@ -136,6 +154,49 @@ kline_count         = 200         # candles to fetch for regime analysis
 # Market-neutral: long one stock, short the correlated peer, trade the spread.
 # Works best on Indian equities (HDFC/ICICI, TCS/INFY, etc.)
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-Strategy Orchestrator (run with `--orchestrator`)
+# Adaptive capital allocation: runs DCA + Momentum simultaneously, tracks
+# performance per strategy per market regime, and shifts capital to winners
+# using a multi-armed bandit (softmax over EMA-smoothed risk-adjusted returns).
+# ─────────────────────────────────────────────────────────────────────────────
+# [orchestrator]
+# ema_decay              = 0.9    # EMA smoothing (higher = more weight on history)
+# temperature            = 1.0    # softmax temp (higher = more exploration)
+# min_allocation         = 0.05   # minimum 5% floor per strategy (prevents starvation)
+# rebalance_interval     = 100    # rebalance every 100 ticks
+# min_trades_for_prior_update = 10  # min trades before adjusting regime priors
+# strategy_max_drawdown  = 0.15   # 15% drawdown from peak → auto-disable strategy
+# strategy_cooldown_ticks = 200   # ticks to wait before re-enabling a disabled strategy
+# strategies             = ["dca", "momentum"]  # which strategies to run
+#
+# [orchestrator.dca]
+# buy_amount_quote       = 100.0  # USDT per DCA buy
+# interval_ticks         = 10     # buy every N ticks
+# use_sma_filter         = true   # skip buys when price < 200 SMA
+# sma_period             = 200
+# take_profit_pct        = 0.05   # sell when price rises 5% above avg entry
+# trailing_stop_pct      = 0.03   # sell when price drops 3% from peak
+#
+# [orchestrator.momentum]
+# position_size_quote    = 1000.0 # USDT per momentum trade
+# cooldown_ticks         = 5      # ticks between trades
+#
+# [orchestrator.grid]
+# lower_price            = 60000.0  # grid lower bound
+# upper_price            = 90000.0  # grid upper bound
+# levels                 = 20       # number of grid levels
+# qty_per_level          = 0.001    # base asset qty per grid line
+#
+# [orchestrator.pairs]
+# symbol_a               = "ETHUSDT"   # first leg
+# symbol_b               = "BTCUSDT"   # second leg (correlated peer)
+# lookback               = 100         # bars for spread statistics
+# entry_z_score          = 2.0         # enter when spread deviates > 2σ
+# exit_z_score           = 0.5         # exit when spread reverts within 0.5σ
+# stop_z_score           = 3.5         # stop out if spread diverges > 3.5σ
+# position_size_quote    = 1000.0      # quote currency per leg
+
 # [pairs]
 # symbol_a             = "NSE:HDFCBANK"   # first leg
 # symbol_b             = "NSE:ICICIBANK"  # second leg (correlated peer)

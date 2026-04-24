@@ -1,5 +1,6 @@
 /target
 config.toml
+*.kite_token
 .env
 *.db
 *.sqlite

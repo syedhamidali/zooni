@@ -88,6 +88,7 @@ fn tight_risk_config() {
         daily_loss_limit: 0.01,
         weekly_loss_limit: 0.03,
         max_drawdown: 0.05,
+        max_consecutive_losses: 3,
     };
     let e = engine_with_config(100_000.0, cfg);
 
