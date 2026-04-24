@@ -458,6 +458,8 @@ fn build_backtest_strategies(
                     cancel_buys_on_trend: true,
                     auto_recenter: false,
                     recenter_threshold_pct: 0.15,
+                    vwap_entry_filter: false,
+                    vwap_threshold_pct: 0.005,
                 })));
             }
             "pairs" => {

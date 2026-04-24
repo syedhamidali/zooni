@@ -28,6 +28,10 @@ path = "src/bin/scan.rs"
 name = "zooni-kite-login"
 path = "src/bin/kite_login.rs"
 
+[[bin]]
+name = "zooni-optimize"
+path = "src/bin/optimize.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }

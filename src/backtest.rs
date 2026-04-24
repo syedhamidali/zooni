@@ -880,6 +880,8 @@ pub fn optimize_grid(
                 auto_recenter: false,
                 recenter_threshold_pct: 0.0,
                 use_post_only: false,
+                vwap_entry_filter: false,
+                vwap_threshold_pct: 0.005,
             };
             let result = run_backtest(&cfg, bars, starting_equity, "0.01", "0.000001", false);
             results.push((n, lower, upper, result));
@@ -1464,6 +1466,8 @@ mod tests {
             auto_recenter: false,
             recenter_threshold_pct: 0.15,
             use_post_only: true,
+            vwap_entry_filter: false,
+            vwap_threshold_pct: 0.005,
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", false);
         assert!(result.total_fills > 0, "should have at least one fill");
@@ -1507,6 +1511,8 @@ mod tests {
             auto_recenter: false,
             recenter_threshold_pct: 0.15,
             use_post_only: true,
+            vwap_entry_filter: false,
+            vwap_threshold_pct: 0.005,
         };
         let result = run_backtest(&cfg, &bars, 10000.0, "0.01", "0.000001", true);
         assert!(result.bars_processed == 500);

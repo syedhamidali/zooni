@@ -627,6 +627,8 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
         auto_recenter: bot_cfg.grid.auto_recenter,
         recenter_threshold_pct: bot_cfg.grid.recenter_threshold_pct,
         use_post_only: bot_cfg.grid.use_post_only,
+        vwap_entry_filter: bot_cfg.grid.vwap_entry_filter,
+        vwap_threshold_pct: bot_cfg.grid.vwap_threshold_pct,
     };
 
     let mut g = Grid::new(
