@@ -240,6 +240,8 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                     side: p.side,
                     price_str: p.price_str.clone(),
                     qty_str: p.qty_str.clone(),
+                    filled_qty: 0.0,
+                    target_qty: p.qty_str.parse().unwrap_or(0.0),
                 },
             );
         }
@@ -449,6 +451,8 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
                                                                 side: plan.side,
                                                                 price_str: plan.price_str.clone(),
                                                                 qty_str: plan.qty_str.clone(),
+                                                                filled_qty: 0.0,
+                                                                target_qty: plan.qty_str.parse().unwrap_or(0.0),
                                                             },
                                                         );
                                                         let _ = db.lock().await.insert_order(&OrderRow {
@@ -673,6 +677,8 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
                     side: p.side,
                     price_str: p.price_str.clone(),
                     qty_str: p.qty_str.clone(),
+                    filled_qty: 0.0,
+                    target_qty: p.qty_str.parse().unwrap_or(0.0),
                 },
             );
         } else {
@@ -699,6 +705,8 @@ async fn deploy_grid(ctx: &ApCtx<'_>, scan: &ScanResult, equity: f64) -> Result<
                             side: p.side,
                             price_str: p.price_str.clone(),
                             qty_str: p.qty_str.clone(),
+                            filled_qty: 0.0,
+                            target_qty: p.qty_str.parse().unwrap_or(0.0),
                         },
                     );
                     let _ = db.lock().await.insert_order(&OrderRow {
@@ -870,6 +878,8 @@ async fn reconcile_grid(
                             side: plan.side,
                             price_str: plan.price_str.clone(),
                             qty_str: plan.qty_str.clone(),
+                            filled_qty: 0.0,
+                            target_qty: plan.qty_str.parse().unwrap_or(0.0),
                         },
                     );
                     let _ = db.lock().await.insert_order(&OrderRow {

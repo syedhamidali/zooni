@@ -55,6 +55,10 @@ pub struct LevelOrder {
     pub side: Side,
     pub price_str: String,
     pub qty_str: String,
+    /// Accumulated filled quantity (updated on each partial/full fill).
+    pub filled_qty: f64,
+    /// Target quantity for this order.
+    pub target_qty: f64,
 }
 
 #[derive(Debug)]

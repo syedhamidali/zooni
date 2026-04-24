@@ -338,6 +338,8 @@ async fn run_inner(
                             side: dbo.side,
                             price_str: crate::grid::format_to_increment(dbo.price, &tick_size),
                             qty_str: crate::grid::format_to_increment(dbo.qty, &base_precision),
+                            filled_qty: 0.0,
+                            target_qty: dbo.qty,
                         },
                     );
                     info!(level = dbo.level_index, order_id = %dbo.order_id, "restored open order");
@@ -758,8 +760,13 @@ async fn run_inner(
                         ..
                     } => {
                         // Find which grid level this order belongs to
-                        let level_entry = grid.orders.iter().find(|(_, o)| o.order_id == order_id);
-                        if let Some((&level, _)) = level_entry {
+                        let level_entry = grid.orders.iter_mut().find(|(_, o)| o.order_id == order_id);
+                        if let Some((&level, order)) = level_entry {
+                            // Track accumulated fill quantity
+                            order.filled_qty += fill_qty;
+                            let fully_filled = order.filled_qty >= order.target_qty
+                                || status == "Filled";
+
                             let notional = fill_price * fill_qty;
                             let grid_spacing = if grid.levels.len() >= 2 {
                                 grid.levels[1] - grid.levels[0]
@@ -771,8 +778,8 @@ async fn run_inner(
                                 Side::Buy => 0.0,
                             };
 
-                            // Only process fully filled orders for grid replacement
-                            if status == "Filled" {
+                            // Only remove order and place replacement when fully filled
+                            if fully_filled {
                                 grid.orders.remove(&level);
                             }
 
@@ -830,8 +837,8 @@ async fn run_inner(
                                 guard.on_fill(Market::Crypto, &cfg.grid.symbol, "grid", -notional);
                             }
 
-                            // Place replacement if fully filled
-                            if status == "Filled" {
+                            // Place replacement only when fully filled
+                            if fully_filled {
                                 if regime_paused {
                                     info!(level, ?side, "regime paused — skipping replacement order");
                                 } else if let Some(plan) = grid.plan_replacement(level, side) {
@@ -1006,6 +1013,8 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
                 side: p.side,
                 price_str: p.price_str.clone(),
                 qty_str: p.qty_str.clone(),
+                filled_qty: 0.0,
+                target_qty: p.qty_str.parse().unwrap_or(0.0),
             },
         );
         // Persist to DB
@@ -1062,6 +1071,8 @@ async fn place_with_risk(ctx: &BotCtx<'_>, grid: &mut Grid, p: &PlannedOrder) {
                     side: p.side,
                     price_str: p.price_str.clone(),
                     qty_str: p.qty_str.clone(),
+                    filled_qty: 0.0,
+                    target_qty: p.qty_str.parse().unwrap_or(0.0),
                 },
             );
             // Persist order to DB before returning
