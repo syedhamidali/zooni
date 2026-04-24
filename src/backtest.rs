@@ -113,6 +113,9 @@ impl AtrCalculator {
 }
 
 /// Run a backtest of the grid strategy on historical data.
+///
+/// `fee_rate` is the per-side fee fraction (e.g. 0.001 = 0.1% maker/taker).
+/// Pass 0.0 to disable fee simulation.
 pub fn run_backtest(
     grid_cfg: &GridCfg,
     bars: &[PriceBar],
@@ -120,6 +123,55 @@ pub fn run_backtest(
     _tick_size: &str,
     _base_precision: &str,
     adaptive_sizing: bool,
+) -> BacktestResult {
+    run_backtest_with_costs(
+        grid_cfg,
+        bars,
+        starting_equity,
+        _tick_size,
+        _base_precision,
+        adaptive_sizing,
+        0.001,
+        5.0,
+    )
+}
+
+/// Like `run_backtest` but with an explicit fee rate.
+pub fn run_backtest_with_fees(
+    grid_cfg: &GridCfg,
+    bars: &[PriceBar],
+    starting_equity: f64,
+    _tick_size: &str,
+    _base_precision: &str,
+    adaptive_sizing: bool,
+    fee_rate: f64,
+) -> BacktestResult {
+    run_backtest_with_costs(
+        grid_cfg,
+        bars,
+        starting_equity,
+        _tick_size,
+        _base_precision,
+        adaptive_sizing,
+        fee_rate,
+        5.0,
+    )
+}
+
+/// Full backtest with explicit fee rate and slippage.
+///
+/// `slippage_bps` is adverse slippage in basis points (e.g. 5.0 = 0.05%).
+/// Buys fill at `order_price * (1 + slippage_bps/10000)`,
+/// sells fill at `order_price * (1 - slippage_bps/10000)`.
+pub fn run_backtest_with_costs(
+    grid_cfg: &GridCfg,
+    bars: &[PriceBar],
+    starting_equity: f64,
+    _tick_size: &str,
+    _base_precision: &str,
+    adaptive_sizing: bool,
+    fee_rate: f64,
+    slippage_bps: f64,
 ) -> BacktestResult {
     let levels = compute_levels(
         grid_cfg.lower_price,
@@ -207,16 +259,35 @@ pub fn run_backtest(
             }
         }
 
-        // Check which orders would have filled during this bar
+        // Simulate intra-bar price path to avoid look-ahead bias.
+        // If close > open (bullish bar): assume open → low → high → close
+        // If close <= open (bearish bar): assume open → high → low → close
+        // Fill at order price when the simulated path first crosses it.
+        let bullish = bar.close > bar.open;
         let mut filled_levels: Vec<(usize, Side, f64)> = Vec::new();
 
         for (&level, order) in orders.iter() {
-            let would_fill = match order.side {
-                Side::Buy => bar.low <= order.price,
-                Side::Sell => bar.high >= order.price,
+            let would_fill = if bullish {
+                // Path: open → low → high → close
+                match order.side {
+                    Side::Buy => bar.low <= order.price && order.price <= bar.open,
+                    Side::Sell => bar.high >= order.price && order.price >= bar.low,
+                }
+            } else {
+                // Path: open → high → low → close
+                match order.side {
+                    Side::Buy => bar.low <= order.price && order.price <= bar.high,
+                    Side::Sell => bar.high >= order.price && order.price >= bar.open,
+                }
             };
             if would_fill {
-                filled_levels.push((level, order.side, order.price));
+                // Apply adverse slippage to fill price
+                let slip_mult = slippage_bps / 10_000.0;
+                let slipped_price = match order.side {
+                    Side::Buy => order.price * (1.0 + slip_mult), // buy higher
+                    Side::Sell => order.price * (1.0 - slip_mult), // sell lower
+                };
+                filled_levels.push((level, order.side, slipped_price));
             }
         }
 
@@ -228,25 +299,31 @@ pub fn run_backtest(
             let pnl = match side {
                 Side::Buy => {
                     buy_fills += 1;
+                    let notional = fill_price * fill_qty;
+                    let fee = notional * fee_rate;
                     holdings_base += fill_qty;
-                    // Update weighted average buy price
+                    // Update weighted average buy price including fee
                     if holdings_base > 0.0 {
+                        let effective_cost = notional + fee;
                         avg_buy_price = ((avg_buy_price * (holdings_base - fill_qty))
-                            + (fill_price * fill_qty))
+                            + effective_cost)
                             / holdings_base;
                     }
-                    equity -= fill_price * fill_qty; // spend cash
+                    equity -= notional + fee; // spend cash + fee
                     0.0 // no realized PnL on buy
                 }
                 Side::Sell => {
                     sell_fills += 1;
-                    let cycle_pnl = if holdings_base >= fill_qty {
+                    let notional = fill_price * fill_qty;
+                    let fee = notional * fee_rate;
+                    let gross_pnl = if holdings_base >= fill_qty {
                         (fill_price - avg_buy_price) * fill_qty
                     } else {
                         grid_spacing * fill_qty // approximate
                     };
+                    let cycle_pnl = gross_pnl - fee;
                     holdings_base = (holdings_base - fill_qty).max(0.0);
-                    equity += fill_price * fill_qty; // receive cash
+                    equity += notional - fee; // receive cash minus fee
                     total_cycles += 1;
                     if cycle_pnl > 0.0 {
                         winning_cycles += 1;
@@ -795,15 +872,27 @@ pub fn run_orchestrator_backtest_with_data(
             kline_buf.remove(0);
         }
 
-        // Check pending orders for fills
+        // Check pending orders for fills using simulated intra-bar path
+        let bar_bullish = bar.close > bar.open;
         let mut fills_this_bar = Vec::new();
         pending_orders.retain(|order| {
             let filled = match order.order_type {
                 OrderType::Market => true,
-                OrderType::Limit => match order.side {
-                    Side::Buy => bar.low <= order.price,
-                    Side::Sell => bar.high >= order.price,
-                },
+                OrderType::Limit => {
+                    if bar_bullish {
+                        // Path: open → low → high → close
+                        match order.side {
+                            Side::Buy => bar.low <= order.price && order.price <= bar.open,
+                            Side::Sell => bar.high >= order.price && order.price >= bar.low,
+                        }
+                    } else {
+                        // Path: open → high → low → close
+                        match order.side {
+                            Side::Buy => bar.low <= order.price && order.price <= bar.high,
+                            Side::Sell => bar.high >= order.price && order.price >= bar.open,
+                        }
+                    }
+                }
             };
             if filled {
                 let fill_price = match order.order_type {

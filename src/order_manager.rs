@@ -8,6 +8,10 @@ pub struct OrderTimeout {
     pub order_id: String,
     pub submitted_at: Instant,
     pub timeout: Duration,
+    /// Target quantity for this order.
+    pub target_qty: f64,
+    /// Cumulative quantity filled so far.
+    pub filled_qty: f64,
 }
 
 pub struct OrderManager {
@@ -28,6 +32,18 @@ impl OrderManager {
             order_id,
             submitted_at: Instant::now(),
             timeout: self.default_timeout,
+            target_qty: 0.0,
+            filled_qty: 0.0,
+        });
+    }
+
+    pub fn track_with_qty(&mut self, order_id: String, target_qty: f64) {
+        self.pending.push(OrderTimeout {
+            order_id,
+            submitted_at: Instant::now(),
+            timeout: self.default_timeout,
+            target_qty,
+            filled_qty: 0.0,
         });
     }
 
@@ -36,7 +52,40 @@ impl OrderManager {
             order_id,
             submitted_at: Instant::now(),
             timeout,
+            target_qty: 0.0,
+            filled_qty: 0.0,
         });
+    }
+
+    /// Record a partial or full fill. Returns true if the order is now fully filled
+    /// (filled_qty >= target_qty). A fully filled order is automatically removed.
+    pub fn record_fill(&mut self, order_id: &str, qty: f64) -> bool {
+        let mut fully_filled = false;
+        if let Some(o) = self.pending.iter_mut().find(|o| o.order_id == order_id) {
+            o.filled_qty += qty;
+            if o.target_qty > 0.0 && o.filled_qty >= o.target_qty - 1e-12 {
+                fully_filled = true;
+            }
+        }
+        if fully_filled {
+            self.pending.retain(|o| o.order_id != order_id);
+        }
+        fully_filled
+    }
+
+    /// Get the filled quantity for a pending order.
+    pub fn filled_qty(&self, order_id: &str) -> f64 {
+        self.pending
+            .iter()
+            .find(|o| o.order_id == order_id)
+            .map(|o| o.filled_qty)
+            .unwrap_or(0.0)
+    }
+
+    /// Check if an order is fully filled (filled_qty >= target_qty).
+    pub fn is_fully_filled(&self, order_id: &str) -> bool {
+        // If it's not in pending, it was already removed (fully filled or cancelled)
+        !self.pending.iter().any(|o| o.order_id == order_id)
     }
 
     pub fn filled(&mut self, order_id: &str) {
@@ -83,6 +132,8 @@ mod tests {
             order_id: "OLD-1".into(),
             submitted_at: Instant::now() - Duration::from_secs(10),
             timeout: Duration::from_secs(5),
+            target_qty: 0.0,
+            filled_qty: 0.0,
         });
         mgr.track("NEW-1".into());
 
@@ -110,6 +161,8 @@ mod tests {
             order_id: "FAST-1".into(),
             submitted_at: Instant::now() - Duration::from_millis(200),
             timeout: Duration::from_millis(100),
+            target_qty: 0.0,
+            filled_qty: 0.0,
         });
 
         let expired = mgr.expired_orders();
@@ -123,5 +176,37 @@ mod tests {
         mgr.track("A".into());
         mgr.filled("DOES-NOT-EXIST"); // should not panic
         assert_eq!(mgr.pending_count(), 1);
+    }
+
+    #[test]
+    fn partial_fill_tracking() {
+        let mut mgr = OrderManager::new(Duration::from_secs(60));
+        mgr.track_with_qty("ORD-1".into(), 10.0);
+        assert_eq!(mgr.pending_count(), 1);
+
+        // Partial fill: 3 of 10
+        let full = mgr.record_fill("ORD-1", 3.0);
+        assert!(!full, "should not be fully filled yet");
+        assert_eq!(mgr.pending_count(), 1);
+        assert!((mgr.filled_qty("ORD-1") - 3.0).abs() < 1e-9);
+
+        // Another partial: 5 of 10 (total 8)
+        let full = mgr.record_fill("ORD-1", 5.0);
+        assert!(!full);
+        assert!((mgr.filled_qty("ORD-1") - 8.0).abs() < 1e-9);
+
+        // Final fill: 2 of 10 (total 10) → fully filled, removed
+        let full = mgr.record_fill("ORD-1", 2.0);
+        assert!(full, "should be fully filled now");
+        assert_eq!(mgr.pending_count(), 0);
+    }
+
+    #[test]
+    fn is_fully_filled_after_removal() {
+        let mut mgr = OrderManager::new(Duration::from_secs(5));
+        mgr.track_with_qty("ORD-1".into(), 1.0);
+        assert!(!mgr.is_fully_filled("ORD-1"));
+        mgr.record_fill("ORD-1", 1.0);
+        assert!(mgr.is_fully_filled("ORD-1"));
     }
 }

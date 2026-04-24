@@ -588,6 +588,12 @@ impl Orchestrator {
         for slot in &self.slots {
             let key = format!("orch_perf_{}", slot.performance.strategy_name);
             db.set_state(&key, &slot.performance.to_json())?;
+
+            // Save internal strategy state (price history, indicators, etc.)
+            let state_key = format!("orch_strategy_state_{}", slot.performance.strategy_name);
+            if let Some(json) = slot.strategy.save_state() {
+                db.set_state(&state_key, &json)?;
+            }
         }
 
         let allocs = self.allocations();
@@ -607,6 +613,12 @@ impl Orchestrator {
                 if let Some(perf) = StrategyPerformance::from_json(&json) {
                     slot.performance = perf;
                 }
+            }
+
+            // Restore internal strategy state
+            let state_key = format!("orch_strategy_state_{}", slot.performance.strategy_name);
+            if let Some(json) = db.get_state(&state_key)? {
+                slot.strategy.load_state(&json);
             }
         }
 

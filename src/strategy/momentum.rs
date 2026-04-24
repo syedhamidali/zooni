@@ -7,10 +7,23 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use super::{FillEvent, MarketSnapshot, OrderType, Strategy, StrategyAction};
 use crate::indicators;
 use crate::types::Side;
+
+/// Serializable snapshot of momentum strategy state.
+#[derive(Serialize, Deserialize)]
+pub struct MomentumSnapshot {
+    pub price_history: Vec<f64>,
+    pub high_history: Vec<f64>,
+    pub low_history: Vec<f64>,
+    pub ticks_since_trade: u64,
+    pub confirmed_momentum: bool,
+    pub regime_confirmation_bars: u32,
+    pub pending_regime: bool,
+}
 
 const MAX_HISTORY: usize = 200;
 
@@ -86,10 +99,17 @@ pub struct MomentumStrategy {
     positions: Vec<OpenPosition>,
     ticks_since_trade: u64,
     last_signal: Option<Signal>,
+    /// Current confirmed regime: true = momentum, false = mean-reversion.
+    confirmed_momentum: bool,
+    /// Consecutive bars the pending regime signal has persisted.
+    regime_confirmation_bars: u32,
+    /// The regime signal being confirmed (true = momentum).
+    pending_regime: bool,
 }
 
 impl MomentumStrategy {
     pub fn new(config: MomentumConfig) -> Self {
+        let initial_momentum = matches!(config.mode, StrategyMode::MomentumOnly);
         Self {
             config,
             price_history: Vec::new(),
@@ -98,7 +118,32 @@ impl MomentumStrategy {
             positions: Vec::new(),
             ticks_since_trade: u64::MAX, // allow immediate first trade
             last_signal: None,
+            confirmed_momentum: initial_momentum,
+            regime_confirmation_bars: 0,
+            pending_regime: initial_momentum,
         }
+    }
+
+    pub fn snapshot(&self) -> MomentumSnapshot {
+        MomentumSnapshot {
+            price_history: self.price_history.clone(),
+            high_history: self.high_history.clone(),
+            low_history: self.low_history.clone(),
+            ticks_since_trade: self.ticks_since_trade,
+            confirmed_momentum: self.confirmed_momentum,
+            regime_confirmation_bars: self.regime_confirmation_bars,
+            pending_regime: self.pending_regime,
+        }
+    }
+
+    pub fn restore(&mut self, snap: &MomentumSnapshot) {
+        self.price_history = snap.price_history.clone();
+        self.high_history = snap.high_history.clone();
+        self.low_history = snap.low_history.clone();
+        self.ticks_since_trade = snap.ticks_since_trade;
+        self.confirmed_momentum = snap.confirmed_momentum;
+        self.regime_confirmation_bars = snap.regime_confirmation_bars;
+        self.pending_regime = snap.pending_regime;
     }
 
     fn push_price(&mut self, close: f64, high: f64, low: f64) {
@@ -119,8 +164,6 @@ impl MomentumStrategy {
 
     pub fn generate_signal(&self) -> Option<Signal> {
         let prices = &self.price_history;
-        let highs = &self.high_history;
-        let lows = &self.low_history;
 
         // Need enough data for all indicators
         let min_len = self
@@ -133,19 +176,53 @@ impl MomentumStrategy {
         }
 
         let rsi_val = indicators::rsi(prices, self.config.rsi_period)?;
-        let adx_result = indicators::adx(highs, lows, prices, 14);
-        let adx_val = adx_result.map(|(adx, _, _)| adx).unwrap_or(0.0);
 
+        // Use the confirmed regime (with hysteresis applied in update_regime)
         let use_momentum = match self.config.mode {
             StrategyMode::MomentumOnly => true,
             StrategyMode::MeanReversionOnly => false,
-            StrategyMode::Auto => adx_val > 25.0,
+            StrategyMode::Auto => self.confirmed_momentum,
         };
 
         if use_momentum {
             self.momentum_signal(prices, rsi_val)
         } else {
             self.mean_reversion_signal(prices, rsi_val)
+        }
+    }
+
+    /// Update regime detection with hysteresis: require 3+ consecutive bars of
+    /// the same regime signal before switching.
+    fn update_regime(&mut self) {
+        if self.config.mode != StrategyMode::Auto {
+            return;
+        }
+
+        let adx_result = indicators::adx(
+            &self.high_history,
+            &self.low_history,
+            &self.price_history,
+            14,
+        );
+        let adx_val = adx_result.map(|(adx, _, _)| adx).unwrap_or(0.0);
+        let raw_momentum = adx_val > 25.0;
+
+        if raw_momentum == self.pending_regime {
+            self.regime_confirmation_bars += 1;
+        } else {
+            self.pending_regime = raw_momentum;
+            self.regime_confirmation_bars = 1;
+        }
+
+        // Only switch after 3+ consecutive bars of the new regime signal
+        if self.regime_confirmation_bars >= 3 && self.pending_regime != self.confirmed_momentum {
+            self.confirmed_momentum = self.pending_regime;
+            tracing::debug!(
+                momentum = self.confirmed_momentum,
+                bars = self.regime_confirmation_bars,
+                adx = adx_val,
+                "regime switched after confirmation",
+            );
         }
     }
 
@@ -286,6 +363,7 @@ impl Strategy for MomentumStrategy {
 
         // Use bid/ask as high/low proxy for tick-level data
         self.push_price(snapshot.last, snapshot.ask, snapshot.bid);
+        self.update_regime();
         self.ticks_since_trade = self.ticks_since_trade.saturating_add(1);
 
         let mut actions = Vec::new();
@@ -377,6 +455,16 @@ impl Strategy for MomentumStrategy {
         }
         if let Some(&v) = params.get("position_size_quote") {
             self.config.position_size_quote = v.clamp(10.0, 100_000.0);
+        }
+    }
+
+    fn save_state(&self) -> Option<String> {
+        serde_json::to_string(&self.snapshot()).ok()
+    }
+
+    fn load_state(&mut self, json: &str) {
+        if let Ok(snap) = serde_json::from_str::<MomentumSnapshot>(json) {
+            self.restore(&snap);
         }
     }
 }

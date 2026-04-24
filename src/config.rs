@@ -277,6 +277,9 @@ pub struct GridCfg {
 #[derive(Debug, Deserialize)]
 pub struct RiskCfg {
     pub starting_equity_quote: f64,
+    /// Trading fee rate per fill (maker/taker). Default 0.1% = 0.001.
+    #[serde(default = "default_fee_rate")]
+    pub fee_rate: f64,
     #[serde(default = "default_max_total")]
     pub max_total_exposure: f64,
     #[serde(default = "default_max_market")]
@@ -293,6 +296,13 @@ pub struct RiskCfg {
     pub max_drawdown: f64,
     #[serde(default = "default_max_consecutive_losses")]
     pub max_consecutive_losses: u32,
+    /// IANA timezone for daily/weekly loss reset (e.g. "Asia/Kolkata"). Default: "UTC".
+    #[serde(default = "default_loss_reset_tz")]
+    pub loss_reset_timezone: String,
+}
+
+fn default_loss_reset_tz() -> String {
+    "UTC".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,6 +375,9 @@ fn default_drawdown() -> f64 {
 }
 fn default_max_consecutive_losses() -> u32 {
     3
+}
+fn default_fee_rate() -> f64 {
+    0.001
 }
 fn default_db_path() -> String {
     "trading-bot.db".to_string()

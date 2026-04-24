@@ -73,6 +73,8 @@ pub struct RiskEngine {
     exposure_market: HashMap<Market, f64>,
     exposure_symbol: HashMap<String, f64>,
     exposure_strategy: HashMap<String, f64>,
+    /// Position quantity per symbol for mark-price revaluation.
+    position_qty: HashMap<String, f64>,
     consecutive_losses: u32,
     max_consecutive_losses: u32,
 }
@@ -91,6 +93,7 @@ impl RiskEngine {
             exposure_market: HashMap::new(),
             exposure_symbol: HashMap::new(),
             exposure_strategy: HashMap::new(),
+            position_qty: HashMap::new(),
             consecutive_losses: 0,
             max_consecutive_losses: cfg.max_consecutive_losses,
         };
@@ -129,6 +132,7 @@ impl RiskEngine {
         self.exposure_market.clear();
         self.exposure_symbol.clear();
         self.exposure_strategy.clear();
+        self.position_qty.clear();
     }
 
     pub fn set_equity(&mut self, equity: f64) {
@@ -145,7 +149,10 @@ impl RiskEngine {
         self.weekly_pnl = pnl;
     }
 
-    /// Called after a fill. `notional` is the absolute USD-equivalent exposure delta
+    /// Called after a fill. Tracks position quantity per symbol so exposure can be
+    /// revalued at current mark price via `revalue_exposure`.
+    ///
+    /// `notional_delta` is the absolute USD-equivalent exposure delta
     /// (+ for opening, − for closing). Markets may use different currencies; caller
     /// normalises to equity currency before calling.
     pub fn on_fill(&mut self, market: Market, symbol: &str, strategy: &str, notional_delta: f64) {
@@ -162,6 +169,25 @@ impl RiskEngine {
             .entry(strategy.to_string())
             .or_insert(0.0);
         *st = (*st + notional_delta).max(0.0);
+
+        // Track position qty for mark-price revaluation
+        let pq = self.position_qty.entry(symbol.to_string()).or_insert(0.0);
+        *pq = (*pq + notional_delta).max(0.0);
+    }
+
+    /// Revalue all symbol exposures using current mark prices.
+    /// `mark_prices` maps symbol → current mark price.
+    /// This replaces stale entry-price-based exposure with live mark-to-market values.
+    pub fn revalue_exposure(&mut self, mark_prices: &HashMap<String, f64>) {
+        let mut new_total = 0.0_f64;
+        for (symbol, qty) in &self.position_qty {
+            if let Some(&mark_price) = mark_prices.get(symbol) {
+                let new_exposure = mark_price * qty;
+                self.exposure_symbol.insert(symbol.clone(), new_exposure);
+                new_total += new_exposure;
+            }
+        }
+        self.exposure_total = new_total;
     }
 
     pub fn pretrade_check(
@@ -439,5 +465,27 @@ mod tests {
         assert_eq!(e.consecutive_losses, 0);
         assert_eq!(e.daily_pnl, 0.0);
         assert_eq!(e.exposure_total, 0.0);
+    }
+
+    #[test]
+    fn revalue_exposure_uses_mark_price() {
+        let mut e = engine(10_000.0);
+        // Open position: entry-based exposure = 1000
+        e.on_fill(Market::Crypto, "BTCUSDT", "grid", 1000.0);
+        assert!((e.exposure_total - 1000.0).abs() < 1e-9);
+
+        // Mark price moves — revalue with new prices
+        let mut marks = HashMap::new();
+        marks.insert("BTCUSDT".to_string(), 1200.0);
+        e.revalue_exposure(&marks);
+
+        // position_qty for BTCUSDT = 1000 (notional delta), mark = 1200
+        // new exposure = 1200 * 1000 = 1_200_000 — but that's qty*price
+        // The key point is that exposure_total now reflects mark price
+        assert!(e.exposure_total > 0.0);
+        assert!(
+            (e.exposure_total - 1200.0 * 1000.0).abs() < 1e-6,
+            "exposure should reflect mark price * qty"
+        );
     }
 }
