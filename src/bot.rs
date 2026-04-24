@@ -88,6 +88,7 @@ async fn run_inner(cfg: BotConfig, external_tui: Option<Arc<Mutex<TuiState>>>) -
         daily_loss_limit: cfg.risk.daily_loss_limit,
         weekly_loss_limit: cfg.risk.weekly_loss_limit,
         max_drawdown: cfg.risk.max_drawdown,
+        max_consecutive_losses: cfg.risk.max_consecutive_losses,
     };
     let (engine, kill) = RiskEngine::new(risk_cfg, cfg.risk.starting_equity_quote);
     let engine = Arc::new(Mutex::new(engine));

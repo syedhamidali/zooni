@@ -20,6 +20,7 @@ pub struct RiskConfig {
     pub daily_loss_limit: f64,
     pub weekly_loss_limit: f64,
     pub max_drawdown: f64,
+    pub max_consecutive_losses: u32,
 }
 
 impl Default for RiskConfig {
@@ -32,6 +33,7 @@ impl Default for RiskConfig {
             daily_loss_limit: 0.05,
             weekly_loss_limit: 0.10,
             max_drawdown: 0.15,
+            max_consecutive_losses: 3,
         }
     }
 }
@@ -47,6 +49,7 @@ pub enum Reject {
     ExceedsSymbolExposure,
     ExceedsStrategyExposure,
     NoEquity,
+    ConsecutiveLossLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +73,8 @@ pub struct RiskEngine {
     exposure_market: HashMap<Market, f64>,
     exposure_symbol: HashMap<String, f64>,
     exposure_strategy: HashMap<String, f64>,
+    consecutive_losses: u32,
+    max_consecutive_losses: u32,
 }
 
 impl RiskEngine {
@@ -86,6 +91,8 @@ impl RiskEngine {
             exposure_market: HashMap::new(),
             exposure_symbol: HashMap::new(),
             exposure_strategy: HashMap::new(),
+            consecutive_losses: 0,
+            max_consecutive_losses: cfg.max_consecutive_losses,
         };
         (engine, kill)
     }
@@ -98,6 +105,30 @@ impl RiskEngine {
     }
     pub fn reset_kill_switch(&self) {
         self.kill.store(false, Ordering::SeqCst);
+    }
+
+    pub fn on_trade_result(&mut self, profit: f64) {
+        if profit < 0.0 {
+            self.consecutive_losses += 1;
+            if self.consecutive_losses >= self.max_consecutive_losses {
+                eprintln!(
+                    "[RISK] consecutive loss limit reached ({}/{}), tripping kill switch",
+                    self.consecutive_losses, self.max_consecutive_losses,
+                );
+                self.trip_kill_switch();
+            }
+        } else {
+            self.consecutive_losses = 0;
+        }
+    }
+
+    pub fn reset_session(&mut self) {
+        self.consecutive_losses = 0;
+        self.daily_pnl = 0.0;
+        self.exposure_total = 0.0;
+        self.exposure_market.clear();
+        self.exposure_symbol.clear();
+        self.exposure_strategy.clear();
     }
 
     pub fn set_equity(&mut self, equity: f64) {
@@ -142,6 +173,9 @@ impl RiskEngine {
     ) -> Result<(), Reject> {
         if self.kill.load(Ordering::SeqCst) {
             return Err(Reject::KillSwitchTripped);
+        }
+        if self.consecutive_losses >= self.max_consecutive_losses {
+            return Err(Reject::ConsecutiveLossLimit);
         }
         if self.equity <= 0.0 {
             return Err(Reject::NoEquity);
@@ -358,5 +392,52 @@ mod tests {
             e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
             Err(Reject::DrawdownLimit),
         );
+    }
+
+    #[test]
+    fn consecutive_loss_trips_kill_switch() {
+        let mut e = engine(10_000.0);
+        e.on_trade_result(-100.0);
+        e.on_trade_result(-50.0);
+        e.on_trade_result(-200.0);
+        assert!(e.kill.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn winning_trade_resets_consecutive_counter() {
+        let mut e = engine(10_000.0);
+        e.on_trade_result(-100.0);
+        e.on_trade_result(-50.0);
+        e.on_trade_result(10.0); // win resets
+        e.on_trade_result(-30.0);
+        assert_eq!(e.consecutive_losses, 1);
+        assert!(!e.kill.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn pretrade_rejects_after_consecutive_losses() {
+        let mut e = engine(10_000.0);
+        e.on_trade_result(-1.0);
+        e.on_trade_result(-1.0);
+        e.on_trade_result(-1.0);
+        // Reset kill switch so we test the consecutive-loss check itself
+        e.reset_kill_switch();
+        assert_eq!(
+            e.pretrade_check(Market::Crypto, "BTCUSDT", "grid", 100.0),
+            Err(Reject::ConsecutiveLossLimit),
+        );
+    }
+
+    #[test]
+    fn reset_session_clears_counters() {
+        let mut e = engine(10_000.0);
+        e.on_trade_result(-1.0);
+        e.on_trade_result(-1.0);
+        e.set_daily_pnl(-200.0);
+        e.on_fill(Market::Crypto, "BTCUSDT", "grid", 1000.0);
+        e.reset_session();
+        assert_eq!(e.consecutive_losses, 0);
+        assert_eq!(e.daily_pnl, 0.0);
+        assert_eq!(e.exposure_total, 0.0);
     }
 }

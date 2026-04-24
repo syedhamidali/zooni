@@ -10,6 +10,7 @@ pub mod grid;
 pub mod indicators;
 pub mod market_hours;
 pub mod metrics;
+pub mod order_manager;
 pub mod persistence;
 pub mod rate_limit;
 pub mod regime;

@@ -16,6 +16,7 @@
 - [Auto-Pilot Mode](./concepts/autopilot.md)
 - [Funding Rate Arbitrage](./concepts/funding-arb.md)
 - [Momentum & Mean Reversion](./concepts/momentum.md)
+- [Pairs Trading](./concepts/pairs-trading.md)
 
 # Tools
 

@@ -210,6 +210,8 @@ pub struct RiskCfg {
     pub weekly_loss_limit: f64,
     #[serde(default = "default_drawdown")]
     pub max_drawdown: f64,
+    #[serde(default = "default_max_consecutive_losses")]
+    pub max_consecutive_losses: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +281,9 @@ fn default_weekly_loss() -> f64 {
 }
 fn default_drawdown() -> f64 {
     0.15
+}
+fn default_max_consecutive_losses() -> u32 {
+    3
 }
 fn default_db_path() -> String {
     "trading-bot.db".to_string()
