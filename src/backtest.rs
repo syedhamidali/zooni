@@ -113,6 +113,9 @@ impl AtrCalculator {
 }
 
 /// Run a backtest of the grid strategy on historical data.
+///
+/// `fee_rate` is the per-side fee fraction (e.g. 0.001 = 0.1% maker/taker).
+/// Pass 0.0 to disable fee simulation.
 pub fn run_backtest(
     grid_cfg: &GridCfg,
     bars: &[PriceBar],
@@ -120,6 +123,19 @@ pub fn run_backtest(
     _tick_size: &str,
     _base_precision: &str,
     adaptive_sizing: bool,
+) -> BacktestResult {
+    run_backtest_with_fees(grid_cfg, bars, starting_equity, _tick_size, _base_precision, adaptive_sizing, 0.001)
+}
+
+/// Like `run_backtest` but with an explicit fee rate.
+pub fn run_backtest_with_fees(
+    grid_cfg: &GridCfg,
+    bars: &[PriceBar],
+    starting_equity: f64,
+    _tick_size: &str,
+    _base_precision: &str,
+    adaptive_sizing: bool,
+    fee_rate: f64,
 ) -> BacktestResult {
     let levels = compute_levels(
         grid_cfg.lower_price,
@@ -241,25 +257,31 @@ pub fn run_backtest(
             let pnl = match side {
                 Side::Buy => {
                     buy_fills += 1;
+                    let notional = fill_price * fill_qty;
+                    let fee = notional * fee_rate;
                     holdings_base += fill_qty;
-                    // Update weighted average buy price
+                    // Update weighted average buy price including fee
                     if holdings_base > 0.0 {
+                        let effective_cost = notional + fee;
                         avg_buy_price = ((avg_buy_price * (holdings_base - fill_qty))
-                            + (fill_price * fill_qty))
+                            + effective_cost)
                             / holdings_base;
                     }
-                    equity -= fill_price * fill_qty; // spend cash
+                    equity -= notional + fee; // spend cash + fee
                     0.0 // no realized PnL on buy
                 }
                 Side::Sell => {
                     sell_fills += 1;
-                    let cycle_pnl = if holdings_base >= fill_qty {
+                    let notional = fill_price * fill_qty;
+                    let fee = notional * fee_rate;
+                    let gross_pnl = if holdings_base >= fill_qty {
                         (fill_price - avg_buy_price) * fill_qty
                     } else {
                         grid_spacing * fill_qty // approximate
                     };
+                    let cycle_pnl = gross_pnl - fee;
                     holdings_base = (holdings_base - fill_qty).max(0.0);
-                    equity += fill_price * fill_qty; // receive cash
+                    equity += notional - fee; // receive cash minus fee
                     total_cycles += 1;
                     if cycle_pnl > 0.0 {
                         winning_cycles += 1;
