@@ -27,6 +27,12 @@ pub struct GridStrategyConfig {
     pub auto_recenter: bool,
     /// Fraction beyond the upper/lower band that triggers re-centering (e.g. 0.15 = 15%).
     pub recenter_threshold_pct: f64,
+    /// Only place new grid orders when the current price is within `vwap_threshold_pct`
+    /// of VWAP. Reduces adverse selection on grid start.
+    pub vwap_entry_filter: bool,
+    /// Maximum fractional deviation from VWAP allowed before skipping order placement.
+    /// E.g. 0.005 = within 0.5% of VWAP. Only used when `vwap_entry_filter = true`.
+    pub vwap_threshold_pct: f64,
 }
 
 impl Default for GridStrategyConfig {
@@ -40,6 +46,8 @@ impl Default for GridStrategyConfig {
             cancel_buys_on_trend: true,
             auto_recenter: false,
             recenter_threshold_pct: 0.15,
+            vwap_entry_filter: false,
+            vwap_threshold_pct: 0.005,
         }
     }
 }
@@ -63,6 +71,14 @@ pub struct GridStrategy {
     recenter_threshold_pct: f64,
     /// Most recent ATR value for re-centering half-range calculation.
     last_atr: f64,
+    /// Only place new orders when price is within `vwap_threshold_pct` of VWAP.
+    vwap_entry_filter: bool,
+    /// Maximum fractional deviation from VWAP to allow grid placement.
+    vwap_threshold_pct: f64,
+    /// Rolling price history for intra-strategy VWAP estimation (typical prices).
+    vwap_prices: Vec<f64>,
+    /// Rolling volume history paired with `vwap_prices`.
+    vwap_volumes: Vec<f64>,
 }
 
 impl GridStrategy {
@@ -82,6 +98,10 @@ impl GridStrategy {
             auto_recenter: config.auto_recenter,
             recenter_threshold_pct: config.recenter_threshold_pct,
             last_atr: 0.0,
+            vwap_entry_filter: config.vwap_entry_filter,
+            vwap_threshold_pct: config.vwap_threshold_pct,
+            vwap_prices: Vec::new(),
+            vwap_volumes: Vec::new(),
         }
     }
 
@@ -133,6 +153,43 @@ impl Strategy for GridStrategy {
         }
 
         let price = snapshot.last;
+
+        // Accumulate price/volume history for VWAP estimation.
+        // Use last price as a proxy for typical price and volume_24h as the volume weight.
+        // Keep a rolling window of up to 100 ticks to avoid unbounded growth.
+        const VWAP_WINDOW: usize = 100;
+        self.vwap_prices.push(price);
+        self.vwap_volumes.push(snapshot.volume_24h);
+        if self.vwap_prices.len() > VWAP_WINDOW {
+            self.vwap_prices.remove(0);
+            self.vwap_volumes.remove(0);
+        }
+
+        // VWAP entry filter: skip placing new orders when price has drifted too far
+        // from fair value, reducing adverse selection on grid start.
+        if self.vwap_entry_filter {
+            // Use last price as both high/low/close approximation so the VWAP
+            // collapses to a volume-weighted average price from tick history.
+            if let Some(vwap_val) = crate::indicators::vwap(
+                &self.vwap_prices,
+                &self.vwap_prices,
+                &self.vwap_prices,
+                &self.vwap_volumes,
+            ) {
+                let deviation_pct = (price - vwap_val).abs() / vwap_val;
+                if deviation_pct > self.vwap_threshold_pct {
+                    tracing::debug!(
+                        "Skipping grid placement: price {:.2} is {:.2}% from VWAP {:.2}",
+                        price,
+                        deviation_pct * 100.0,
+                        vwap_val
+                    );
+                    self.last_price = Some(price);
+                    return Ok(vec![StrategyAction::None]);
+                }
+            }
+        }
+
         let mut actions = Vec::new();
 
         // Auto re-centering: if price has escaped the grid band by more than
@@ -280,6 +337,8 @@ mod tests {
             cancel_buys_on_trend: false,
             auto_recenter: false,
             recenter_threshold_pct: 0.15,
+            vwap_entry_filter: false,
+            vwap_threshold_pct: 0.005,
         })
     }
 
