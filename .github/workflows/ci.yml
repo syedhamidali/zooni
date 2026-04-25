@@ -90,6 +90,8 @@ jobs:
             target/release/zooni
             target/release/zooni-backtest
             target/release/zooni-scan
+            target/release/zooni-optimize
+            target/release/zooni-report
 
   release:
     name: Auto-Release
@@ -116,7 +118,7 @@ jobs:
           path: artifacts/
 
       - name: Make binaries executable
-        run: chmod +x artifacts/zooni artifacts/zooni-backtest artifacts/zooni-scan
+        run: chmod +x artifacts/zooni artifacts/zooni-backtest artifacts/zooni-scan artifacts/zooni-optimize artifacts/zooni-report
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -127,4 +129,6 @@ jobs:
             artifacts/zooni
             artifacts/zooni-backtest
             artifacts/zooni-scan
+            artifacts/zooni-optimize
+            artifacts/zooni-report
           generate_release_notes: true
