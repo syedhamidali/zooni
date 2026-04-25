@@ -419,6 +419,11 @@ pub struct BotSettings {
     /// Default: 86400 (24 hours).
     #[serde(default = "default_reconcile_lookback_secs")]
     pub reconcile_lookback_secs: u64,
+    /// Optional password for the web dashboard. When set, the dashboard requires
+    /// HTTP Basic Auth (username ignored, password must match) or a Bearer token.
+    /// When `None`, the dashboard is publicly accessible.
+    #[serde(default)]
+    pub dashboard_password: Option<String>,
 }
 
 impl Default for BotSettings {
@@ -432,6 +437,7 @@ impl Default for BotSettings {
             shutdown_wait_secs: default_shutdown_wait(),
             reconcile_on_startup: true,
             reconcile_lookback_secs: default_reconcile_lookback_secs(),
+            dashboard_password: None,
         }
     }
 }
