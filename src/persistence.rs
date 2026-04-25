@@ -140,9 +140,16 @@ impl Db {
                     value TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS pnl_series (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ms INTEGER NOT NULL,
+                    cumulative_pnl REAL NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_orders_symbol_status ON orders(symbol, status);
                 CREATE INDEX IF NOT EXISTS idx_fills_symbol ON fills(symbol);
                 CREATE INDEX IF NOT EXISTS idx_fills_filled_at ON fills(filled_at);
+                CREATE INDEX IF NOT EXISTS idx_pnl_series_ts ON pnl_series(timestamp_ms);
                 ",
             )
             .context("running migrations")?;
@@ -355,6 +362,47 @@ impl Db {
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("reading fills in range")?;
         Ok(rows)
+    }
+
+    // -- P&L time series (for persistent dashboard charts) --------------------
+
+    /// Append a P&L data point to the persistent time series.
+    pub fn insert_pnl_point(&self, timestamp_ms: i64, cumulative_pnl: f64) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO pnl_series (timestamp_ms, cumulative_pnl) VALUES (?1, ?2)",
+                params![timestamp_ms, cumulative_pnl],
+            )
+            .context("inserting pnl series point")?;
+        Ok(())
+    }
+
+    /// Load the last `limit` P&L data points, ordered by timestamp ascending.
+    pub fn load_pnl_series(&self, limit: usize) -> Result<Vec<(i64, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT timestamp_ms, cumulative_pnl FROM pnl_series ORDER BY timestamp_ms DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("reading pnl series")?;
+        // Reverse to ascending order
+        let mut result = rows;
+        result.reverse();
+        Ok(result)
+    }
+
+    /// Prune old P&L series points, keeping only the latest `keep` entries.
+    pub fn prune_pnl_series(&self, keep: usize) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM pnl_series WHERE id NOT IN (SELECT id FROM pnl_series ORDER BY timestamp_ms DESC LIMIT ?1)",
+                params![keep as i64],
+            )
+            .context("pruning pnl series")?;
+        Ok(())
     }
 
     // -- Bot state ------------------------------------------------------------

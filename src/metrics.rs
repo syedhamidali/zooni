@@ -11,8 +11,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::State;
-use axum::response::{Html, Json};
+use axum::http::{Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -66,6 +69,12 @@ pub struct DashboardSeries {
     pub regime_confidence: f64,
     /// Whether grid is suitable
     pub grid_suitable: bool,
+    /// Autopilot: scanner score for the current symbol (0-100)
+    pub scanner_score: f64,
+    /// Autopilot: seconds until next market scan
+    pub next_scan_secs: i64,
+    /// Autopilot: top scan candidates (symbol, score)
+    pub scan_candidates: Vec<(String, f64)>,
 }
 
 #[derive(Clone, Serialize)]
@@ -104,6 +113,9 @@ impl DashboardSeries {
             regime: "UNKNOWN".to_string(),
             regime_confidence: 0.0,
             grid_suitable: true,
+            scanner_score: 0.0,
+            next_scan_secs: 0,
+            scan_candidates: Vec::new(),
         }
     }
 
@@ -277,6 +289,91 @@ struct LiveData {
     grid_levels: Vec<GridLevel>,
     // Fills
     recent_fills: Vec<FillEntry>,
+    // Autopilot
+    scanner_score: f64,
+    next_scan_secs: i64,
+    scan_candidates: Vec<(String, f64)>,
+}
+
+/// Scan candidate for JSON serialization.
+#[derive(Clone, Serialize)]
+pub struct ScanCandidate {
+    pub symbol: String,
+    pub score: f64,
+}
+
+// -- Auth middleware ----------------------------------------------------------
+
+/// Shared auth state for the dashboard password.
+#[derive(Clone)]
+struct AuthState {
+    password: Option<String>,
+}
+
+/// Middleware that checks Basic Auth or Bearer token against the configured password.
+async fn auth_middleware(
+    State(auth): State<AuthState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(ref expected) = auth.password else {
+        // No password configured — allow all requests
+        return next.run(req).await;
+    };
+
+    // Always allow /health without auth (for load balancers / uptime monitors)
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
+    if let Some(header) = req.headers().get("authorization") {
+        if let Ok(value) = header.to_str() {
+            // Bearer token
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                if token == expected.as_str() {
+                    return next.run(req).await;
+                }
+            }
+            // Basic auth (username ignored, password checked)
+            if let Some(encoded) = value.strip_prefix("Basic ") {
+                if let Ok(decoded) = base64_decode(encoded) {
+                    if let Some((_user, pass)) = decoded.split_once(':') {
+                        if pass == expected.as_str() {
+                            return next.run(req).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Return 401 with WWW-Authenticate header to trigger browser login dialog
+    (
+        StatusCode::UNAUTHORIZED,
+        [("WWW-Authenticate", "Basic realm=\"Zooni Dashboard\"")],
+        "Unauthorized",
+    )
+        .into_response()
+}
+
+/// Minimal base64 decoder (avoids adding a dependency for a single use).
+fn base64_decode(input: &str) -> Result<String, ()> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let input = input.trim_end_matches('=');
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in input.as_bytes() {
+        let val = TABLE.iter().position(|&c| c == b).ok_or(())? as u32;
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| ())
 }
 
 // -- Handlers ----------------------------------------------------------------
@@ -328,6 +425,9 @@ async fn live_handler(State(m): State<Arc<Metrics>>) -> Json<LiveData> {
         pnl_history: series.pnl_history.clone(),
         grid_levels: series.grid_levels.clone(),
         recent_fills: series.recent_fills.clone(),
+        scanner_score: series.scanner_score,
+        next_scan_secs: series.next_scan_secs,
+        scan_candidates: series.scan_candidates.clone(),
     })
 }
 
@@ -412,13 +512,28 @@ async fn dashboard_handler() -> Html<&'static str> {
 }
 
 /// Start the HTTP metrics + dashboard server on the given port.
-pub async fn serve(metrics: Arc<Metrics>, port: u16) {
+///
+/// When `password` is `Some`, all endpoints except `/health` require
+/// HTTP Basic Auth or a `Bearer <token>` header matching the password.
+pub async fn serve(metrics: Arc<Metrics>, port: u16, password: Option<String>) {
+    let auth_state = AuthState {
+        password: password.clone(),
+    };
+
+    if password.is_some() {
+        info!("dashboard auth enabled — password required for access");
+    }
+
     let app = Router::new()
         .route("/", get(dashboard_handler))
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/live", get(live_handler))
+        .layer(middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth_middleware,
+        ))
         .with_state(metrics);
 
     let addr = format!("0.0.0.0:{port}");
@@ -514,9 +629,27 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .grid-level .side-tag.buy { color: var(--green); }
   .grid-level .side-tag.sell { color: var(--red); }
 
+  .autopilot-panel { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+    padding: 0 24px 12px; }
+  .autopilot-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; }
+  .autopilot-card h3 { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .ap-row { display: flex; justify-content: space-between; padding: 4px 0;
+    font-size: 12px; border-bottom: 1px solid var(--border); }
+  .ap-row:last-child { border-bottom: none; }
+  .ap-label { color: var(--muted); }
+  .ap-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ap-value.good { color: var(--green); }
+  .ap-value.warn { color: var(--yellow); }
+  .candidate-row { display: flex; justify-content: space-between; padding: 3px 0;
+    font-size: 11px; }
+  .candidate-row .sym { color: var(--blue); font-weight: 600; }
+  .candidate-row .score { color: var(--cyan); font-variant-numeric: tabular-nums; }
+  .countdown { color: var(--purple); font-variant-numeric: tabular-nums; }
+
   @media (max-width: 900px) {
     .grid-layout { grid-template-columns: 1fr 1fr; }
-    .charts, .bottom { grid-template-columns: 1fr; }
+    .charts, .bottom, .autopilot-panel { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -551,6 +684,25 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     <div class="label">Open Orders</div>
     <div class="value" id="open-orders">---</div>
     <div class="sub" id="orders-detail">--- placed / --- failed</div>
+  </div>
+</div>
+
+<div class="autopilot-panel" id="autopilot-panel" style="display:none">
+  <div class="autopilot-card">
+    <h3>Autopilot Status</h3>
+    <div class="ap-row"><span class="ap-label">Symbol</span><span class="ap-value" id="ap-symbol">---</span></div>
+    <div class="ap-row"><span class="ap-label">Regime</span><span class="ap-value" id="ap-regime">---</span></div>
+    <div class="ap-row"><span class="ap-label">Scanner Score</span><span class="ap-value" id="ap-score">---</span></div>
+  </div>
+  <div class="autopilot-card">
+    <h3>Next Scan</h3>
+    <div class="ap-row"><span class="ap-label">Time Remaining</span><span class="ap-value countdown" id="ap-countdown">---</span></div>
+    <div class="ap-row"><span class="ap-label">Confidence</span><span class="ap-value" id="ap-confidence">---</span></div>
+    <div class="ap-row"><span class="ap-label">Grid Suitable</span><span class="ap-value" id="ap-suitable">---</span></div>
+  </div>
+  <div class="autopilot-card">
+    <h3>Top Candidates</h3>
+    <div id="ap-candidates"><span style="color:var(--muted);font-size:11px">No scan data</span></div>
   </div>
 </div>
 
@@ -737,6 +889,39 @@ function update(data) {
 
   document.getElementById('open-orders').textContent = data.open_orders;
   document.getElementById('orders-detail').textContent = data.orders_placed + ' placed / ' + data.orders_failed + ' failed';
+
+  // Autopilot panel
+  const apPanel = document.getElementById('autopilot-panel');
+  if (data.scanner_score > 0 || (data.scan_candidates && data.scan_candidates.length > 0)) {
+    apPanel.style.display = '';
+    document.getElementById('ap-symbol').textContent = data.symbol || '---';
+    document.getElementById('ap-regime').textContent = data.regime || '---';
+    const scoreEl = document.getElementById('ap-score');
+    scoreEl.textContent = data.scanner_score.toFixed(1);
+    scoreEl.className = 'ap-value ' + (data.scanner_score >= 50 ? 'good' : 'warn');
+    const countdown = document.getElementById('ap-countdown');
+    if (data.next_scan_secs > 0) {
+      const m = Math.floor(data.next_scan_secs / 60);
+      const s = data.next_scan_secs % 60;
+      countdown.textContent = m + 'm ' + s + 's';
+    } else {
+      countdown.textContent = 'scanning...';
+    }
+    document.getElementById('ap-confidence').textContent = (data.regime_confidence * 100).toFixed(0) + '%';
+    const suitEl = document.getElementById('ap-suitable');
+    suitEl.textContent = data.grid_suitable ? 'YES' : 'NO';
+    suitEl.className = 'ap-value ' + (data.grid_suitable ? 'good' : 'warn');
+    const candDiv = document.getElementById('ap-candidates');
+    if (data.scan_candidates && data.scan_candidates.length > 0) {
+      let ch = '';
+      for (const c of data.scan_candidates.slice(0, 3)) {
+        ch += '<div class="candidate-row"><span class="sym">' + c[0] + '</span><span class="score">' + c[1].toFixed(1) + '</span></div>';
+      }
+      candDiv.innerHTML = ch;
+    } else {
+      candDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">No scan data</span>';
+    }
+  }
 
   // Price chart with grid levels as horizontal lines
   if (data.price_history.length > 0) {

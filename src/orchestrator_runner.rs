@@ -108,8 +108,9 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
     metrics.set_equity(cfg.risk.starting_equity_quote);
     {
         let m = metrics.clone();
+        let pw = cfg.bot.dashboard_password.clone();
         tokio::spawn(async move {
-            crate::metrics::serve(m, 9091).await;
+            crate::metrics::serve(m, 9091, pw).await;
         });
     }
 

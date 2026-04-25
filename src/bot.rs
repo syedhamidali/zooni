@@ -131,8 +131,9 @@ async fn run_inner(
     metrics.set_equity(cfg.risk.starting_equity_quote);
     {
         let m = metrics.clone();
+        let pw = cfg.bot.dashboard_password.clone();
         tokio::spawn(async move {
-            crate::metrics::serve(m, 9090).await;
+            crate::metrics::serve(m, 9090, pw).await;
         });
     }
 
