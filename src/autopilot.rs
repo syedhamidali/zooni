@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 use crate::alerts::Alerter;
 use crate::config::{AutoPilotConfig, BotConfig};
 use crate::grid::{Grid, LevelOrder};
+use crate::metrics::Metrics;
 use crate::persistence::{Db, FillRow, OrderRow, OrderStatus};
 use crate::retry::{CircuitBreaker, RetryPolicy, with_retry};
 use crate::risk::{Market, RiskConfig, RiskEngine};
@@ -60,6 +61,17 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
     info!("🤖 AUTO-PILOT MODE — bot will autonomously scan, pick, and trade");
     if dry_run {
         info!("*** DRY-RUN MODE — no orders will be sent to the exchange ***");
+    }
+
+    // -- Metrics HTTP server --
+    let metrics = Arc::new(Metrics::new());
+    metrics.set_equity(cfg.risk.starting_equity_quote);
+    {
+        let m = metrics.clone();
+        let pw = cfg.bot.dashboard_password.clone();
+        tokio::spawn(async move {
+            crate::metrics::serve(m, 9090, pw).await;
+        });
     }
 
     // -- Persistence --
