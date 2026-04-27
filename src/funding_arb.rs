@@ -113,7 +113,7 @@ pub async fn run(cfg: BotConfig) -> Result<()> {
         let m = metrics.clone();
         let pw = cfg.bot.dashboard_password.clone();
         tokio::spawn(async move {
-            crate::metrics::serve(m, 9091, pw).await;
+            crate::metrics::serve(m, 9090, pw).await;
         });
     }
 
