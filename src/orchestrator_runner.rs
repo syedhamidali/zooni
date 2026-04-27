@@ -51,11 +51,24 @@ use crate::ws_private::{self, WsEvent};
 pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
     let dry_run = cfg.bot.dry_run;
     if dry_run {
-        info!("*** DRY-RUN MODE — no orders will be sent ***");
+        info!("*** DRY-RUN MODE — no orders will be sent, live prices from Bybit public API ***");
     }
 
     // Wrap in Arc so extra-symbol background loops can share it without cloning.
     let venue = Arc::new(venue);
+
+    // In dry-run mode, use Bybit public API (no auth needed) for live price data
+    // so paper trading reflects real market movement instead of a static midpoint.
+    let price_venue: Arc<Venue> = if dry_run {
+        let bybit_cfg = crate::venues::bybit::Config {
+            credentials: None,
+            testnet: false,
+            recv_window_ms: 5000,
+        };
+        Arc::new(Venue::new_bybit(bybit_cfg, "UNIFIED".to_string()))
+    } else {
+        venue.clone()
+    };
 
     let symbol = cfg.grid.symbol.clone();
 
@@ -174,46 +187,57 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
     // Spawn background tick loops for additional symbols (index 1+).
     for extra_orch in symbol_orchestrators {
         let kill2 = kill.clone();
-        let venue2 = venue.clone();
-        let poll_secs2 = cfg.grid.poll_secs;
-        let dry_run2 = dry_run;
-        let extra_sym = extra_orch.symbol.clone();
-        let mid2 = (cfg.grid.lower_price + cfg.grid.upper_price) / 2.0;
-        let initial_snap2 = crate::strategy::MarketSnapshot {
-            symbol: extra_sym.clone(),
-            bid: mid2 - 1.0,
-            ask: mid2 + 1.0,
-            last: mid2,
-            volume_24h: 1_000_000.0,
+        let tick_venue2 = if dry_run {
+            price_venue.clone()
+        } else {
+            venue.clone()
         };
+        let poll_secs2 = cfg.grid.poll_secs;
+        let extra_sym = extra_orch.symbol.clone();
         tokio::spawn(async move {
             let poll_interval2 = std::time::Duration::from_secs(poll_secs2);
             let mut orch2 = extra_orch;
+            // Fetch live initial price for extra symbol
+            let initial_snap2 = match tick_venue2.ticker(&extra_sym).await {
+                Ok(t) => crate::strategy::MarketSnapshot {
+                    symbol: extra_sym.clone(),
+                    bid: t.bid_price.unwrap_or(t.last_price),
+                    ask: t.ask_price.unwrap_or(t.last_price),
+                    last: t.last_price,
+                    volume_24h: 0.0,
+                },
+                Err(e) => {
+                    warn!(symbol = %extra_sym, err = %e, "initial ticker failed for extra symbol, using fallback");
+                    crate::strategy::MarketSnapshot {
+                        symbol: extra_sym.clone(),
+                        bid: 0.0,
+                        ask: 0.0,
+                        last: 0.0,
+                        volume_24h: 0.0,
+                    }
+                }
+            };
             let _ = orch2.on_start(&initial_snap2);
             loop {
                 if kill2.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
                 tokio::time::sleep(poll_interval2).await;
-                let snap2 = if dry_run2 {
-                    initial_snap2.clone()
-                } else {
-                    match venue2.ticker(&extra_sym).await {
-                        Ok(t) => crate::strategy::MarketSnapshot {
-                            symbol: extra_sym.clone(),
-                            bid: t.bid_price.unwrap_or(t.last_price),
-                            ask: t.ask_price.unwrap_or(t.last_price),
-                            last: t.last_price,
-                            volume_24h: 0.0,
-                        },
-                        Err(e) => {
-                            warn!(
-                                symbol = %extra_sym,
-                                err = %e,
-                                "ticker fetch failed for extra symbol"
-                            );
-                            continue;
-                        }
+                let snap2 = match tick_venue2.ticker(&extra_sym).await {
+                    Ok(t) => crate::strategy::MarketSnapshot {
+                        symbol: extra_sym.clone(),
+                        bid: t.bid_price.unwrap_or(t.last_price),
+                        ask: t.ask_price.unwrap_or(t.last_price),
+                        last: t.last_price,
+                        volume_24h: 0.0,
+                    },
+                    Err(e) => {
+                        warn!(
+                            symbol = %extra_sym,
+                            err = %e,
+                            "ticker fetch failed for extra symbol"
+                        );
+                        continue;
                     }
                 };
                 if let Err(e) = orch2.on_tick(&snap2, &[], None) {
@@ -269,19 +293,12 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
     }
 
     // -- Initial market snapshot --
-    let initial_snapshot = if dry_run {
-        let mid = (cfg.grid.lower_price + cfg.grid.upper_price) / 2.0;
-        MarketSnapshot {
-            symbol: symbol.clone(),
-            bid: mid - 1.0,
-            ask: mid + 1.0,
-            last: mid,
-            volume_24h: 1_000_000.0,
-        }
-    } else {
-        let ticker = with_retry(&retry_policy, "ticker", || venue.ticker(&symbol))
+    let initial_snapshot = {
+        let src = if dry_run { &price_venue } else { &venue };
+        let ticker = with_retry(&retry_policy, "ticker", || src.ticker(&symbol))
             .await
             .map_err(|e| anyhow!("initial ticker fetch failed: {}", e))?;
+        info!(price = ticker.last_price, "initial live price fetched");
         MarketSnapshot {
             symbol: symbol.clone(),
             bid: ticker.bid_price.unwrap_or(ticker.last_price),
@@ -457,30 +474,28 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
             }
         }
 
-        // -- Get current price --
-        let snapshot = if dry_run {
-            initial_snapshot.clone()
-        } else {
-            match venue.ticker(&symbol).await {
-                Ok(ticker) => MarketSnapshot {
-                    symbol: symbol.clone(),
-                    bid: ticker.bid_price.unwrap_or(ticker.last_price),
-                    ask: ticker.ask_price.unwrap_or(ticker.last_price),
-                    last: ticker.last_price,
-                    volume_24h: 0.0,
-                },
-                Err(e) => {
-                    breaker.record_failure();
-                    warn!(err = %e, "ticker fetch failed");
-                    continue;
-                }
+        // -- Get current price (dry-run uses Bybit public API for live data) --
+        let tick_src = if dry_run { &price_venue } else { &venue };
+        let snapshot = match tick_src.ticker(&symbol).await {
+            Ok(ticker) => MarketSnapshot {
+                symbol: symbol.clone(),
+                bid: ticker.bid_price.unwrap_or(ticker.last_price),
+                ask: ticker.ask_price.unwrap_or(ticker.last_price),
+                last: ticker.last_price,
+                volume_24h: 0.0,
+            },
+            Err(e) => {
+                breaker.record_failure();
+                warn!(err = %e, "ticker fetch failed");
+                continue;
             }
         };
 
         // -- Regime detection (periodic) --
         regime_tick += 1;
-        let current_regime = if regime_tick % regime_interval == 0 && !dry_run {
-            match venue.klines(&symbol, "15", 200).await {
+        let current_regime = if regime_tick % regime_interval == 0 {
+            let kline_src = if dry_run { &price_venue } else { &venue };
+            match kline_src.klines(&symbol, "15", 200).await {
                 Ok(klines) => {
                     kline_history = klines;
                     let analysis = regime::analyze(&kline_history);
