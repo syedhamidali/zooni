@@ -332,11 +332,9 @@ impl Client {
     /// Resolve the CoinDCX `pair` name (e.g. "B-BTC_USDT") from a coindcx_name.
     /// Falls back to guessing "B-{TARGET}_{BASE}" if no API call is desired.
     pub fn guess_pair(symbol: &str) -> String {
-        if symbol.ends_with("USDT") {
-            let base = &symbol[..symbol.len() - 4];
+        if let Some(base) = symbol.strip_suffix("USDT") {
             format!("B-{base}_USDT")
-        } else if symbol.ends_with("INR") {
-            let base = &symbol[..symbol.len() - 3];
+        } else if let Some(base) = symbol.strip_suffix("INR") {
             format!("I-{base}_INR")
         } else {
             format!("B-{symbol}")
