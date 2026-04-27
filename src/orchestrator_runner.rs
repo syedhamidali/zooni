@@ -318,7 +318,10 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
 
             let st = tg_state.clone();
             let status_fn = Arc::new(move || {
-                let s = st.blocking_lock();
+                let s = match st.try_lock() {
+                    Ok(s) => s,
+                    Err(_) => return "⏳ Status temporarily unavailable.".to_string(),
+                };
                 let uptime = Utc::now().timestamp() - s.started_at;
                 telegram::format_status(
                     &s.symbol,
@@ -333,19 +336,28 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
 
             let st = tg_state.clone();
             let pnl_fn = Arc::new(move || {
-                let s = st.blocking_lock();
+                let s = match st.try_lock() {
+                    Ok(s) => s,
+                    Err(_) => return "⏳ P&L temporarily unavailable.".to_string(),
+                };
                 telegram::format_pnl(&s.strategy_stats)
             });
 
             let st = tg_state.clone();
             let alloc_fn = Arc::new(move || {
-                let s = st.blocking_lock();
+                let s = match st.try_lock() {
+                    Ok(s) => s,
+                    Err(_) => return "⏳ Allocations temporarily unavailable.".to_string(),
+                };
                 telegram::format_allocations(&s.allocations)
             });
 
             let st = tg_state.clone();
             let regime_fn = Arc::new(move || {
-                let s = st.blocking_lock();
+                let s = match st.try_lock() {
+                    Ok(s) => s,
+                    Err(_) => return "⏳ Regime temporarily unavailable.".to_string(),
+                };
                 telegram::format_regime(&s.regime, s.regime_confidence)
             });
 
