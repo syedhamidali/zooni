@@ -424,7 +424,7 @@ pub struct BotSettings {
     /// Dry-run mode: simulate orders without hitting the exchange.
     #[serde(default)]
     pub dry_run: bool,
-    /// Path for the SQLite database. Default: "trading-bot.db".
+    /// Path for the SQLite database. Default: "zooni.db".
     #[serde(default = "default_db_path")]
     pub db_path: String,
     /// Max retries for API calls.
@@ -545,7 +545,7 @@ fn default_min_order_notional() -> f64 {
     10.0
 }
 fn default_db_path() -> String {
-    "trading-bot.db".to_string()
+    "zooni.db".to_string()
 }
 fn default_max_retries() -> u32 {
     3

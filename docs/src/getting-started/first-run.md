@@ -5,7 +5,7 @@
 Always test on testnet with dry-run first:
 
 ```bash
-./target/release/trading-bot config.toml --dry-run
+./target/release/zooni config.toml --dry-run
 ```
 
 This simulates the full trading cycle without placing real orders. Watch the logs to verify:
@@ -18,7 +18,7 @@ This simulates the full trading cycle without placing real orders. Watch the log
 Once dry-run looks good, remove `--dry-run` but keep `testnet = true`:
 
 ```bash
-./target/release/trading-bot config.toml
+./target/release/zooni config.toml
 ```
 
 Log in to [Bybit Testnet](https://testnet.bybit.com/) to verify orders appear on the exchange.
@@ -33,7 +33,7 @@ When you're confident:
 4. Start conservatively — fewer levels, smaller `qty_per_level_base`
 
 ```bash
-./target/release/trading-bot config.toml
+./target/release/zooni config.toml
 ```
 
 ## Running Modes
@@ -43,7 +43,7 @@ When you're confident:
 Trade a single symbol configured in `[grid]`:
 
 ```bash
-./trading-bot config.toml
+./zooni config.toml
 ```
 
 ### TUI Mode
@@ -51,7 +51,7 @@ Trade a single symbol configured in `[grid]`:
 Same as standard, but with a live terminal dashboard:
 
 ```bash
-./trading-bot config.toml --tui
+./zooni config.toml --tui
 ```
 
 ### Auto-Pilot Mode
@@ -63,7 +63,7 @@ Fully autonomous — scans markets, picks symbols, sizes positions, and switches
 # [autopilot]
 # enabled = true
 
-./trading-bot config.toml --autopilot
+./zooni config.toml --autopilot
 ```
 
 See [Auto-Pilot Mode](../concepts/autopilot.md) for details.
@@ -83,11 +83,11 @@ Control verbosity with `RUST_LOG`:
 
 ```bash
 # Default (info level)
-RUST_LOG=info ./trading-bot config.toml
+RUST_LOG=info ./zooni config.toml
 
 # Debug everything
-RUST_LOG=debug ./trading-bot config.toml
+RUST_LOG=debug ./zooni config.toml
 
 # Debug bot logic, quiet HTTP noise
-RUST_LOG=trading_bot=debug,reqwest=warn ./trading-bot config.toml
+RUST_LOG=zooni=debug,reqwest=warn ./zooni config.toml
 ```

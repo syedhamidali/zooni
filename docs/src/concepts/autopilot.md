@@ -77,10 +77,10 @@ kline_count = 200             # candles to fetch for analysis
 ```bash
 # Via config
 # Set autopilot.enabled = true in config.toml
-./trading-bot config.toml
+./zooni config.toml
 
 # Via CLI flag (overrides config)
-./trading-bot config.toml --autopilot
+./zooni config.toml --autopilot
 ```
 
 ## Multi-Grid

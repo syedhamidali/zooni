@@ -1,11 +1,11 @@
 //! zooni-report — Monthly P&L and India tax report generator.
 //!
 //! Usage:
-//!   zooni-report trading-bot.db
-//!   zooni-report trading-bot.db --month 2026-04
-//!   zooni-report trading-bot.db --year 2026
-//!   zooni-report trading-bot.db --tax
-//!   zooni-report trading-bot.db --month 2026-04 --csv output.csv
+//!   zooni-report zooni.db
+//!   zooni-report zooni.db --month 2026-04
+//!   zooni-report zooni.db --year 2026
+//!   zooni-report zooni.db --tax
+//!   zooni-report zooni.db --month 2026-04 --csv output.csv
 
 use anyhow::{Context, Result, bail};
 use chrono::{Datelike, TimeZone, Utc};

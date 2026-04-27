@@ -452,33 +452,33 @@ async fn metrics_handler(State(m): State<Arc<Metrics>>) -> String {
     let win_rate_pct = m.win_rate_milli_pct.load(Ordering::Relaxed) as f64 / 1000.0;
 
     format!(
-        "# HELP trading_bot_fills_total Total number of fills\n\
-         # TYPE trading_bot_fills_total counter\n\
-         trading_bot_fills_total {}\n\
-         # HELP trading_bot_buy_fills Total buy fills\n\
-         # TYPE trading_bot_buy_fills counter\n\
-         trading_bot_buy_fills {}\n\
-         # HELP trading_bot_sell_fills Total sell fills\n\
-         # TYPE trading_bot_sell_fills counter\n\
-         trading_bot_sell_fills {}\n\
-         # HELP trading_bot_orders_placed Total orders placed\n\
-         # TYPE trading_bot_orders_placed counter\n\
-         trading_bot_orders_placed {}\n\
-         # HELP trading_bot_orders_failed Total orders failed\n\
-         # TYPE trading_bot_orders_failed counter\n\
-         trading_bot_orders_failed {}\n\
-         # HELP trading_bot_realised_pnl Realised P&L in quote currency\n\
-         # TYPE trading_bot_realised_pnl gauge\n\
-         trading_bot_realised_pnl {:.2}\n\
-         # HELP trading_bot_equity Current equity in quote currency\n\
-         # TYPE trading_bot_equity gauge\n\
-         trading_bot_equity {:.2}\n\
-         # HELP trading_bot_open_orders Current open orders\n\
-         # TYPE trading_bot_open_orders gauge\n\
-         trading_bot_open_orders {}\n\
-         # HELP trading_bot_uptime_seconds Bot uptime in seconds\n\
-         # TYPE trading_bot_uptime_seconds gauge\n\
-         trading_bot_uptime_seconds {}\n\
+        "# HELP zooni_fills_total Total number of fills\n\
+         # TYPE zooni_fills_total counter\n\
+         zooni_fills_total {}\n\
+         # HELP zooni_buy_fills Total buy fills\n\
+         # TYPE zooni_buy_fills counter\n\
+         zooni_buy_fills {}\n\
+         # HELP zooni_sell_fills Total sell fills\n\
+         # TYPE zooni_sell_fills counter\n\
+         zooni_sell_fills {}\n\
+         # HELP zooni_orders_placed Total orders placed\n\
+         # TYPE zooni_orders_placed counter\n\
+         zooni_orders_placed {}\n\
+         # HELP zooni_orders_failed Total orders failed\n\
+         # TYPE zooni_orders_failed counter\n\
+         zooni_orders_failed {}\n\
+         # HELP zooni_realised_pnl Realised P&L in quote currency\n\
+         # TYPE zooni_realised_pnl gauge\n\
+         zooni_realised_pnl {:.2}\n\
+         # HELP zooni_equity Current equity in quote currency\n\
+         # TYPE zooni_equity gauge\n\
+         zooni_equity {:.2}\n\
+         # HELP zooni_open_orders Current open orders\n\
+         # TYPE zooni_open_orders gauge\n\
+         zooni_open_orders {}\n\
+         # HELP zooni_uptime_seconds Bot uptime in seconds\n\
+         # TYPE zooni_uptime_seconds gauge\n\
+         zooni_uptime_seconds {}\n\
          # HELP zooni_sharpe_ratio Rolling annualized Sharpe ratio\n\
          # TYPE zooni_sharpe_ratio gauge\n\
          zooni_sharpe_ratio {}\n\

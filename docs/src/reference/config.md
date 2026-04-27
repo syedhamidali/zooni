@@ -9,7 +9,7 @@ General bot settings.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `dry_run` | bool | `false` | Simulate orders without exchange calls |
-| `db_path` | string | `"trading-bot.db"` | SQLite database file path |
+| `db_path` | string | `"zooni.db"` | SQLite database file path |
 | `max_retries` | u32 | `3` | Max retry attempts per API call |
 | `circuit_breaker_threshold` | u32 | `5` | Consecutive failures before circuit break |
 | `circuit_breaker_cooldown_secs` | u64 | `60` | Seconds to pause after circuit break |

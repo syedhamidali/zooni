@@ -17,7 +17,7 @@ This produces three binaries in `target/release/`:
 
 | Binary | Description |
 |--------|-------------|
-| `trading-bot` | Main trading bot |
+| `zooni` | Main trading bot |
 | `backtest` | Strategy backtester |
 | `scan` | Market scanner |
 
@@ -36,6 +36,6 @@ Pre-built Linux binaries are attached to every [GitHub release](https://github.c
 ## Verify Installation
 
 ```bash
-./target/release/trading-bot --version
+./target/release/zooni --version
 # zooni 2026.4.23 (abc1234)
 ```

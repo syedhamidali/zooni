@@ -5,7 +5,7 @@ Zooni includes a terminal-based UI built with [ratatui](https://ratatui.rs/) for
 ## Usage
 
 ```bash
-./trading-bot config.toml --tui
+./zooni config.toml --tui
 ```
 
 ## Display

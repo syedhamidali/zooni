@@ -13,29 +13,29 @@ sudo useradd -r -s /bin/false trading
 ### 2. Install the Binary
 
 ```bash
-sudo mkdir -p /opt/trading-bot
-sudo cp target/release/trading-bot /opt/trading-bot/
-sudo cp config.toml /opt/trading-bot/
-sudo chown -R trading:trading /opt/trading-bot
-sudo chmod 600 /opt/trading-bot/config.toml
+sudo mkdir -p /opt/zooni
+sudo cp target/release/zooni /opt/zooni/
+sudo cp config.toml /opt/zooni/
+sudo chown -R zooni:zooni /opt/zooni
+sudo chmod 600 /opt/zooni/config.toml
 ```
 
 ### 3. Install the Service File
 
 ```bash
-sudo cp trading-bot.service /etc/systemd/system/
+sudo cp zooni.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
 ### 4. Start
 
 ```bash
-sudo systemctl enable --now trading-bot
+sudo systemctl enable --now zooni
 ```
 
 ## Service File
 
-The included `trading-bot.service` has security hardening:
+The included `zooni.service` has security hardening:
 
 ```ini
 [Unit]
@@ -45,10 +45,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=trading
-Group=trading
-WorkingDirectory=/opt/trading-bot
-ExecStart=/opt/trading-bot/trading-bot /opt/trading-bot/config.toml
+User=zooni
+Group=zooni
+WorkingDirectory=/opt/zooni
+ExecStart=/opt/zooni/zooni /opt/zooni/config.toml
 Restart=always
 RestartSec=10
 Environment=RUST_LOG=info
@@ -57,7 +57,7 @@ Environment=RUST_LOG=info
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/trading-bot
+ReadWritePaths=/opt/zooni
 PrivateTmp=true
 
 # Resource limits
@@ -72,22 +72,22 @@ WantedBy=multi-user.target
 
 ```bash
 # Status
-sudo systemctl status trading-bot
+sudo systemctl status zooni
 
 # Logs (live)
-sudo journalctl -u trading-bot -f
+sudo journalctl -u zooni -f
 
 # Logs (last hour)
-sudo journalctl -u trading-bot --since "1 hour ago"
+sudo journalctl -u zooni --since "1 hour ago"
 
 # Stop
-sudo systemctl stop trading-bot
+sudo systemctl stop zooni
 
 # Restart
-sudo systemctl restart trading-bot
+sudo systemctl restart zooni
 
 # Disable auto-start
-sudo systemctl disable trading-bot
+sudo systemctl disable zooni
 ```
 
 ## Adding Telegram
@@ -95,7 +95,7 @@ sudo systemctl disable trading-bot
 Add environment variables to the service:
 
 ```bash
-sudo systemctl edit trading-bot
+sudo systemctl edit zooni
 ```
 
 ```ini
@@ -107,7 +107,7 @@ Environment=TELEGRAM_CHAT_ID=987654321
 Then restart:
 
 ```bash
-sudo systemctl restart trading-bot
+sudo systemctl restart zooni
 ```
 
 ## Updating
@@ -117,9 +117,9 @@ sudo systemctl restart trading-bot
 cargo build --release
 
 # Deploy
-sudo systemctl stop trading-bot
-sudo cp target/release/trading-bot /opt/trading-bot/
-sudo systemctl start trading-bot
+sudo systemctl stop zooni
+sudo cp target/release/zooni /opt/zooni/
+sudo systemctl start zooni
 ```
 
 ## Exposing the Dashboard

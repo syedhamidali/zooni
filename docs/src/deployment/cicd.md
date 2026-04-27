@@ -25,7 +25,7 @@ Every push and PR to `main` triggers:
 ### 3. Build Release
 
 - `cargo build --release --all-targets` — full release build
-- Uploads binaries (`trading-bot`, `backtest`, `scan`) as GitHub Actions artifacts
+- Uploads binaries (`zooni`, `backtest`, `scan`) as GitHub Actions artifacts
 
 ### 4. Auto-Release
 
