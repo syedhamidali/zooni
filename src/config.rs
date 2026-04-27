@@ -28,6 +28,8 @@ pub struct BotConfig {
     #[serde(default)]
     pub zerodha: Option<ZerodhaCfg>,
     #[serde(default)]
+    pub coindcx: Option<CoinDCXCfg>,
+    #[serde(default)]
     pub funding_arb: Option<FundingArbCfg>,
     #[serde(default)]
     pub tax: TaxConfig,
@@ -49,8 +51,17 @@ impl BotConfig {
         let use_zerodha = venue_override
             .map(|v| v.eq_ignore_ascii_case("zerodha") || v.eq_ignore_ascii_case("kite"))
             .unwrap_or(false);
+        let use_coindcx = venue_override
+            .map(|v| v.eq_ignore_ascii_case("coindcx"))
+            .unwrap_or(false);
 
-        if use_zerodha {
+        if use_coindcx {
+            let ccfg = self
+                .coindcx
+                .clone()
+                .expect("[coindcx] config section required when --venue coindcx");
+            crate::venue::Venue::new_coindcx(ccfg.into_venue_config())
+        } else if use_zerodha {
             let zcfg = self
                 .zerodha
                 .clone()
@@ -191,6 +202,24 @@ impl ZerodhaCfg {
             }
         }
         self.access_token.clone()
+    }
+}
+
+/// CoinDCX credentials. Optional �� only needed for Indian crypto trading.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CoinDCXCfg {
+    pub api_key: String,
+    pub api_secret: String,
+}
+
+impl CoinDCXCfg {
+    pub fn into_venue_config(self) -> crate::venues::coindcx::Config {
+        crate::venues::coindcx::Config {
+            credentials: Some(crate::venues::coindcx::Credentials {
+                api_key: self.api_key,
+                api_secret: self.api_secret,
+            }),
+        }
     }
 }
 

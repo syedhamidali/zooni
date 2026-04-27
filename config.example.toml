@@ -40,6 +40,16 @@ account_type   = "UNIFIED"
 # product            = "CNC"                 # CNC (delivery), MIS (intraday), NRML (F&O)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CoinDCX (optional — for Indian crypto spot trading)
+#
+# Run with:         zooni config.toml --venue coindcx
+# Docs:             https://docs.coindcx.com
+# ─────────────────────────────────────────────────────────────────────────────
+# [coindcx]
+# api_key            = "YOUR_COINDCX_API_KEY"
+# api_secret         = "YOUR_COINDCX_API_SECRET"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Grid strategy
 # ─────────────────────────────────────────────────────────────────────────────
 [grid]

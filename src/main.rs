@@ -65,8 +65,17 @@ async fn main() -> Result<()> {
     let is_zerodha = venue_override
         .map(|v| v.eq_ignore_ascii_case("zerodha") || v.eq_ignore_ascii_case("kite"))
         .unwrap_or(false);
+    let is_coindcx = venue_override
+        .map(|v| v.eq_ignore_ascii_case("coindcx"))
+        .unwrap_or(false);
 
-    let venue_name = if is_zerodha { "Zerodha" } else { "Bybit" };
+    let venue_name = if is_coindcx {
+        "CoinDCX"
+    } else if is_zerodha {
+        "Zerodha"
+    } else {
+        "Bybit"
+    };
 
     if orchestrator {
         tracing::info!(
@@ -121,7 +130,7 @@ async fn main() -> Result<()> {
         let venue = cfg.build_venue(venue_override);
         zooni::tui::run_with_tui(cfg, venue).await
     } else {
-        if is_zerodha {
+        if is_zerodha || is_coindcx {
             let venue = cfg.build_venue(venue_override);
             zooni::orchestrator_runner::run(cfg, venue).await
         } else {

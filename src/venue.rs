@@ -7,7 +7,7 @@
 use anyhow::{Result, anyhow};
 
 use crate::types::{OrderKind, Side};
-use crate::venues::{bybit, yahoo, zerodha};
+use crate::venues::{bybit, coindcx, yahoo, zerodha};
 
 // ---------------------------------------------------------------------------
 // Unified types — every venue maps its native types into these
@@ -93,6 +93,9 @@ pub enum Venue {
         product: String,
         yahoo: tokio::sync::Mutex<yahoo::YahooClient>,
     },
+    CoinDCX {
+        client: coindcx::rest::Client,
+    },
 }
 
 impl Venue {
@@ -100,6 +103,7 @@ impl Venue {
         match self {
             Self::Bybit { .. } => "Bybit",
             Self::Zerodha { .. } => "Zerodha",
+            Self::CoinDCX { .. } => "CoinDCX",
         }
     }
 
@@ -107,6 +111,7 @@ impl Venue {
         match self {
             Self::Bybit { client, .. } => client.base_url(),
             Self::Zerodha { client, .. } => client.base_url(),
+            Self::CoinDCX { client, .. } => client.base_url(),
         }
     }
 
@@ -138,6 +143,15 @@ impl Venue {
                     ask_price: None,
                 })
             }
+            Self::CoinDCX { client } => {
+                let t = client.ticker_for(symbol).await?;
+                Ok(VenueTicker {
+                    symbol: t.market,
+                    last_price: t.last_price.parse().unwrap_or(0.0),
+                    bid_price: t.bid.parse().ok(),
+                    ask_price: t.ask.parse().ok(),
+                })
+            }
         }
     }
 
@@ -157,6 +171,15 @@ impl Venue {
                     last_price: q.last_price,
                     bid_price: None,
                     ask_price: None,
+                })
+            }
+            Self::CoinDCX { client } => {
+                let t = client.ticker_for(symbol).await?;
+                Ok(VenueTicker {
+                    symbol: t.market,
+                    last_price: t.last_price.parse().unwrap_or(0.0),
+                    bid_price: t.bid.parse().ok(),
+                    ask_price: t.ask.parse().ok(),
                 })
             }
         }
@@ -186,6 +209,16 @@ impl Venue {
                     tick_size: inst.tick_size,
                     min_qty: 1.0,
                     lot_size: inst.lot_size as f64,
+                })
+            }
+            Self::CoinDCX { client } => {
+                let detail = client.market_detail_for(symbol).await?;
+                let tick_size = if detail.step > 0.0 { detail.step } else { 0.01 };
+                Ok(VenueInstrument {
+                    symbol: detail.coindcx_name,
+                    tick_size,
+                    min_qty: detail.min_quantity,
+                    lot_size: detail.step,
                 })
             }
         }
@@ -228,6 +261,33 @@ impl Venue {
                 let mut yc = yahoo.lock().await;
                 yc.klines_days(&yahoo_sym, yahoo_interval, days).await
             }
+            Self::CoinDCX { client } => {
+                let pair = coindcx::rest::Client::guess_pair(symbol);
+                let cdcx_interval = match interval {
+                    "1" | "1m" => "1m",
+                    "5" | "5m" => "5m",
+                    "15" | "15m" => "15m",
+                    "30" | "30m" => "30m",
+                    "60" | "1h" => "1h",
+                    "120" | "2h" => "2h",
+                    "240" | "4h" => "4h",
+                    "D" | "1d" | "1D" => "1d",
+                    "W" | "1w" | "1W" => "1w",
+                    other => other,
+                };
+                let candles = client.candles(&pair, cdcx_interval, limit).await?;
+                Ok(candles
+                    .into_iter()
+                    .map(|c| VenueKline {
+                        timestamp: c.time,
+                        open: c.open,
+                        high: c.high,
+                        low: c.low,
+                        close: c.close,
+                        volume: c.volume,
+                    })
+                    .collect())
+            }
         }
     }
 
@@ -267,6 +327,29 @@ impl Venue {
                     total_equity: total,
                     available: avail,
                     currency: "INR".to_string(),
+                })
+            }
+            Self::CoinDCX { client } => {
+                let balances = client.balances().await?;
+                let mut total = 0.0f64;
+                let mut available = 0.0f64;
+                for b in &balances {
+                    if b.currency == "USDT" || b.currency == "INR" {
+                        let bal: f64 = b.balance.parse().unwrap_or(0.0);
+                        let locked: f64 = b.locked_balance.parse().unwrap_or(0.0);
+                        total += bal;
+                        available += bal - locked;
+                    }
+                }
+                let currency = if balances.iter().any(|b| b.currency == "USDT") {
+                    "USDT"
+                } else {
+                    "INR"
+                };
+                Ok(VenueBalance {
+                    total_equity: total,
+                    available,
+                    currency: currency.to_string(),
                 })
             }
         }
@@ -310,6 +393,23 @@ impl Venue {
                     .await?;
                 Ok(VenueOrderResult { order_id })
             }
+            Self::CoinDCX { client } => {
+                let order_type = match kind {
+                    OrderKind::Limit => "Limit",
+                    OrderKind::Market => "Market",
+                };
+                let qty_f: f64 = qty.parse().unwrap_or(0.0);
+                let price_f = price.and_then(|p| p.parse::<f64>().ok());
+                let resp = client
+                    .place_order(symbol, side, order_type, qty_f, price_f, tag)
+                    .await?;
+                let order_id = resp
+                    .orders
+                    .first()
+                    .map(|o| o.id.clone())
+                    .unwrap_or_default();
+                Ok(VenueOrderResult { order_id })
+            }
         }
     }
 
@@ -320,6 +420,10 @@ impl Venue {
                 Ok(())
             }
             Self::Zerodha { client, .. } => client.cancel_order(order_id).await,
+            Self::CoinDCX { client } => {
+                client.cancel_order(order_id).await?;
+                Ok(())
+            }
         }
     }
 
@@ -339,6 +443,10 @@ impl Venue {
                             .await;
                     }
                 }
+                Ok(())
+            }
+            Self::CoinDCX { client } => {
+                client.cancel_all(symbol).await?;
                 Ok(())
             }
         }
@@ -392,10 +500,39 @@ impl Venue {
                     })
                     .collect())
             }
+            Self::CoinDCX { client } => {
+                let orders = client.active_orders(symbol).await?;
+                Ok(orders
+                    .into_iter()
+                    .map(|o| {
+                        let side = if o.side == "buy" {
+                            Side::Buy
+                        } else {
+                            Side::Sell
+                        };
+                        let filled = o.total_quantity - o.remaining_quantity;
+                        VenueOpenOrder {
+                            order_id: o.id,
+                            symbol: o.market,
+                            side,
+                            price: o.price_per_unit,
+                            qty: o.total_quantity,
+                            filled_qty: filled,
+                        }
+                    })
+                    .collect())
+            }
         }
     }
 
     // -- Zerodha-specific ---------------------------------------------------
+
+    pub fn coindcx_client(&self) -> Option<&coindcx::rest::Client> {
+        match self {
+            Self::CoinDCX { client, .. } => Some(client),
+            _ => None,
+        }
+    }
 
     pub fn zerodha_client_mut(&mut self) -> Option<&mut zerodha::rest::Client> {
         match self {
@@ -439,6 +576,12 @@ impl Venue {
             exchange,
             product,
             yahoo: tokio::sync::Mutex::new(yahoo::YahooClient::new()),
+        }
+    }
+
+    pub fn new_coindcx(cfg: coindcx::Config) -> Self {
+        Self::CoinDCX {
+            client: coindcx::rest::Client::new(cfg),
         }
     }
 }

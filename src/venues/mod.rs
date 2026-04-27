@@ -8,6 +8,7 @@
 //! so accidental calls fail loudly instead of silently succeeding.
 
 pub mod bybit;
+pub mod coindcx;
 pub mod hyperliquid;
 pub mod interactive_brokers;
 pub mod mcx;
