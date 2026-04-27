@@ -96,10 +96,10 @@ scan_interval_secs      = 300        # scan every 5 minutes
 
 ```bash
 # Live trading
-./trading-bot config.toml --funding-arb
+./zooni config.toml --funding-arb
 
 # Dry-run mode (no orders sent)
-./trading-bot config.toml --funding-arb --dry-run
+./zooni config.toml --funding-arb --dry-run
 ```
 
 ## Key Parameters

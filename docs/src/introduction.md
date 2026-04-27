@@ -25,7 +25,7 @@ Zooni is an autonomous algorithmic trading bot built in Rust. It runs multiple t
 
 | Binary | Purpose |
 |--------|---------|
-| `trading-bot` | Main bot — runs grids, autopilot, funding arb, dashboard, Telegram |
+| `zooni` | Main bot — runs grids, autopilot, funding arb, dashboard, Telegram |
 | `backtest` | Test strategies against historical or synthetic price data |
 | `scan` | One-shot market scanner — rank symbols by grid suitability |
 
@@ -34,7 +34,7 @@ Zooni is an autonomous algorithmic trading bot built in Rust. It runs multiple t
 Zooni uses date-based versioning (`YYYY.M.D`). Check your version:
 
 ```bash
-./trading-bot --version
+./zooni --version
 # zooni 2026.4.23 (29db06d)
 ```
 

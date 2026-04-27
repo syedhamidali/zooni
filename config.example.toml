@@ -7,7 +7,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 [bot]
 dry_run       = false          # true = simulate orders, no exchange calls
-db_path       = "trading-bot.db"  # SQLite database for order journal + P&L
+db_path       = "zooni.db"        # SQLite database for order journal + P&L
 max_retries   = 3              # retries per API call (exponential backoff)
 circuit_breaker_threshold = 5  # consecutive failures before pausing
 circuit_breaker_cooldown_secs = 60

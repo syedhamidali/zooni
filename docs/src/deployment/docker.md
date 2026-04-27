@@ -9,7 +9,7 @@ docker build -t zooni .
 ```
 
 The build:
-1. Compiles all three binaries (`trading-bot`, `backtest`, `scan`) in a Rust builder stage
+1. Compiles all three binaries (`zooni`, `backtest`, `scan`) in a Rust builder stage
 2. Copies only the binaries into a slim Debian runtime image
 3. Final image includes just `ca-certificates` for HTTPS
 
@@ -77,6 +77,6 @@ docker run --rm \
 ## Notes
 
 - Config is expected at `/data/config.toml`
-- Database is created at `/data/trading-bot.db`
+- Database is created at `/data/zooni.db`
 - Mount `/data` as a volume to persist the database across restarts
 - The image is based on `debian:bookworm-slim` (~80MB)

@@ -71,12 +71,12 @@ All fills are recorded in the SQLite database with realized P&L. Query your perf
 
 ```bash
 # Daily P&L summary
-sqlite3 trading-bot.db \
+sqlite3 zooni.db \
   "SELECT date(filled_at) as day, SUM(realised_pnl) as pnl, COUNT(*) as fills 
    FROM fills GROUP BY day ORDER BY day;"
 
 # Total P&L
-sqlite3 trading-bot.db \
+sqlite3 zooni.db \
   "SELECT SUM(realised_pnl) as total_pnl, COUNT(*) as total_fills FROM fills;"
 ```
 

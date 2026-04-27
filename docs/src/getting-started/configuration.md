@@ -54,7 +54,7 @@ See the [Configuration Reference](../reference/config.md) for a complete field-b
 
 | Variable | Purpose |
 |----------|---------|
-| `RUST_LOG` | Log verbosity (e.g., `info`, `debug`, `trading_bot=debug,reqwest=warn`) |
+| `RUST_LOG` | Log verbosity (e.g., `info`, `debug`, `zooni=debug,reqwest=warn`) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for remote control |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID for notifications |
 
