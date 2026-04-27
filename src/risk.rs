@@ -25,6 +25,10 @@ pub struct RiskConfig {
     pub weekly_loss_limit: f64,
     pub max_drawdown: f64,
     pub max_consecutive_losses: u32,
+    /// When true, consecutive-loss and drawdown limits log warnings but never
+    /// trip the kill switch.  This keeps the dashboard alive in dry-run mode
+    /// where static prices cause every trade to show a fee loss.
+    pub dry_run: bool,
 }
 
 impl Default for RiskConfig {
@@ -38,6 +42,7 @@ impl Default for RiskConfig {
             weekly_loss_limit: 0.10,
             max_drawdown: 0.15,
             max_consecutive_losses: 3,
+            dry_run: false,
         }
     }
 }
@@ -232,14 +237,21 @@ impl RiskEngine {
     pub fn on_trade_result(&mut self, profit: f64) {
         if profit < 0.0 {
             self.consecutive_losses += 1;
-            // Record the loss in the rolling window history.
-            self.record_loss(-profit); // convert to positive magnitude
+            self.record_loss(-profit);
             if self.consecutive_losses >= self.max_consecutive_losses {
-                eprintln!(
-                    "[RISK] consecutive loss limit reached ({}/{}), tripping kill switch",
-                    self.consecutive_losses, self.max_consecutive_losses,
-                );
-                self.trip_kill_switch();
+                if self.cfg.dry_run {
+                    eprintln!(
+                        "[RISK] consecutive loss limit reached ({}/{}) — dry-run, kill switch suppressed",
+                        self.consecutive_losses, self.max_consecutive_losses,
+                    );
+                    self.consecutive_losses = 0;
+                } else {
+                    eprintln!(
+                        "[RISK] consecutive loss limit reached ({}/{}), tripping kill switch",
+                        self.consecutive_losses, self.max_consecutive_losses,
+                    );
+                    self.trip_kill_switch();
+                }
             }
         } else {
             self.consecutive_losses = 0;
@@ -332,7 +344,7 @@ impl RiskEngine {
         if self.kill.load(Ordering::SeqCst) {
             return Err(Reject::KillSwitchTripped);
         }
-        if self.consecutive_losses >= self.max_consecutive_losses {
+        if !self.cfg.dry_run && self.consecutive_losses >= self.max_consecutive_losses {
             return Err(Reject::ConsecutiveLossLimit);
         }
         if self.equity <= 0.0 {
