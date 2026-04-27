@@ -134,12 +134,24 @@ impl TelegramBot {
         callbacks: BotCallbacks,
         mut alert_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     ) {
+        // Flush stale updates from previous sessions so old /pause or /kill
+        // commands don't immediately trip the kill switch on restart.
         let mut offset: i64 = 0;
-        // Counter tracking how many poll cycles have elapsed for the 30-min expiry check.
-        // The check fires when cycle_count % token_check_every == 0 (but not on cycle 0).
+        match self.get_updates(-1).await {
+            Ok(updates) => {
+                if let Some(last) = updates.last() {
+                    if let Some(id) = last.update_id {
+                        offset = id + 1;
+                        info!(flushed = updates.len(), "flushed stale Telegram updates");
+                    }
+                }
+            }
+            Err(e) => warn!(err = %e, "failed to flush stale Telegram updates"),
+        }
+
         let token_check_every: u64 = {
             let secs = poll_interval.as_secs().max(1);
-            (30 * 60 / secs).max(1) // 30 minutes in poll cycles
+            (30 * 60 / secs).max(1)
         };
         let mut cycle_count: u64 = 0;
 
