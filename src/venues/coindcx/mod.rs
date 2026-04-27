@@ -20,13 +20,7 @@ pub struct Credentials {
     pub api_secret: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Config {
     pub credentials: Option<Credentials>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self { credentials: None }
-    }
 }
