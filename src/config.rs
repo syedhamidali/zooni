@@ -453,6 +453,12 @@ pub struct BotSettings {
     /// When `None`, the dashboard is publicly accessible.
     #[serde(default)]
     pub dashboard_password: Option<String>,
+    #[serde(default = "default_dashboard_port")]
+    pub dashboard_port: u16,
+}
+
+fn default_dashboard_port() -> u16 {
+    9090
 }
 
 impl Default for BotSettings {
@@ -467,6 +473,7 @@ impl Default for BotSettings {
             reconcile_on_startup: true,
             reconcile_lookback_secs: default_reconcile_lookback_secs(),
             dashboard_password: None,
+            dashboard_port: default_dashboard_port(),
         }
     }
 }

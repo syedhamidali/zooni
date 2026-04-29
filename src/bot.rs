@@ -134,7 +134,7 @@ async fn run_inner(
         let m = metrics.clone();
         let pw = cfg.bot.dashboard_password.clone();
         tokio::spawn(async move {
-            crate::metrics::serve(m, 9090, pw).await;
+            crate::metrics::serve(m, cfg.bot.dashboard_port, pw).await;
         });
     }
 
