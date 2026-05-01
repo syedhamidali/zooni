@@ -54,9 +54,12 @@ account_type   = "UNIFIED"
 # ─────────────────────────────────────────────────────────────────────────────
 [grid]
 symbol             = "BTCUSDT"
-lower_price        = 60000.0
-upper_price        = 90000.0
-levels             = 20        # more levels = tighter spacing = more trades
+# Range tuned via 60-day hourly BTC backtest (Apr 2026) — best Sharpe + low drawdown.
+# Re-tune with `zooni-backtest --yahoo BTC-USD --yahoo-range 60d --yahoo-interval 1h --optimize`
+# if BTC price moves significantly outside this band.
+lower_price        = 65759.0
+upper_price        = 78776.0
+levels             = 40        # more levels = tighter spacing = more trades
 qty_per_level_base = 0.001     # base asset per grid line (e.g., BTC)
 poll_secs          = 3         # reconciliation polling interval
 cancel_existing_on_start = true
@@ -83,8 +86,11 @@ vwap_threshold_pct = 0.005 # Max allowed deviation from VWAP to start grid (0.5%
 starting_equity_quote = 10000.0   # USDT — set to your actual balance
 max_total_exposure    = 0.80      # 80% of equity
 max_per_market        = 0.40
-max_per_symbol        = 0.20
-max_per_strategy      = 0.15
+# Per-symbol/strategy caps must accommodate the grid: 40 levels × ~$76 ≈ $3,040
+# notional (~30% of $10k). Lower these only when running smaller grids or
+# multi-strategy where you need explicit per-strategy throttling.
+max_per_symbol        = 0.50
+max_per_strategy      = 0.40
 daily_loss_limit      = 0.05      # 5% daily loss → pause
 weekly_loss_limit     = 0.10      # 10% weekly loss → pause
 max_drawdown          = 0.15      # 15% drawdown from peak → pause
@@ -109,7 +115,7 @@ on_fill         = false     # alert on every fill (can be noisy)
 on_risk_breach  = true      # alert when risk limits hit
 on_lifecycle    = true      # alert on startup/shutdown
 on_error        = true      # alert on API errors
-pnl_summary_interval_secs = 3600  # hourly P&L summary (0 = disabled)
+pnl_summary_interval_secs = 86400  # daily P&L summary (3600 = hourly, 0 = disabled)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-pilot mode (optional)
