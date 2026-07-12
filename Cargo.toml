@@ -58,7 +58,7 @@ crossterm = "0.29"
 ratatui = "0.29"
 axum = "0.8"
 tower = "0.5"
-tract-onnx = "0.21"
+tract-onnx = "0.22"
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
