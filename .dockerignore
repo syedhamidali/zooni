@@ -1,0 +1,12 @@
+# Keep the build context small and free of local state/secrets
+target/
+.git/
+config.toml
+*.kite_token
+*.db
+*.sqlite
+.env
+*.key
+*.pem
+*.secret
+.DS_Store
