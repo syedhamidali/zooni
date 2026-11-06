@@ -493,7 +493,7 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
 
         // -- Regime detection (periodic) --
         regime_tick += 1;
-        let current_regime = if regime_tick % regime_interval == 0 {
+        let current_regime = if regime_tick.is_multiple_of(regime_interval) {
             let kline_src = if dry_run { &price_venue } else { &venue };
             match kline_src.klines(&symbol, "15", 200).await {
                 Ok(klines) => {
@@ -818,7 +818,7 @@ pub async fn run(cfg: BotConfig, venue: Venue) -> Result<()> {
 
         // -- Periodic state save --
         save_counter += 1;
-        if save_counter % 100 == 0 {
+        if save_counter.is_multiple_of(100) {
             let db_guard = db.lock().await;
             if let Err(e) = orchestrator.save_state(&db_guard) {
                 warn!(err = %e, "failed to save orchestrator state");

@@ -396,7 +396,9 @@ impl Orchestrator {
         }
 
         if self.config.rebalance_interval > 0
-            && self.tick_count % self.config.rebalance_interval == 0
+            && self
+                .tick_count
+                .is_multiple_of(self.config.rebalance_interval)
             && self.tick_count > 0
         {
             self.check_strategy_health();
