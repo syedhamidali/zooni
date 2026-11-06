@@ -224,7 +224,7 @@ impl TelegramBot {
             // Zerodha token-expiry check every 30 minutes.
             cycle_count += 1;
             if let Some(ref zk) = callbacks.zerodha_kill {
-                if cycle_count % token_check_every == 0 {
+                if cycle_count.is_multiple_of(token_check_every) {
                     use std::cell::Cell;
                     let alert_msg: Cell<Option<String>> = Cell::new(None);
                     crate::venues::zerodha::rest::Client::check_token_expiry(zk, |msg| {
